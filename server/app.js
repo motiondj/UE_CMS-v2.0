@@ -697,18 +697,59 @@ io.on('connection', (socket) => {
     const { name } = data;
     const now = new Date().toISOString();
     const timeStr = new Date().toLocaleTimeString();
+    const clientIP = normalizeIP(socket.handshake.address || '127.0.0.1');
     
-    db.run(
-      'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
-      ['online', now, name],
-      (err) => {
-        if (!err) {
-          console.log(`💓 하트비트 수신: ${name} (시간: ${timeStr})`);
-        } else {
-          console.error(`❌ 하트비트 업데이트 실패: ${name} - ${err.message}`);
-        }
+    // 먼저 클라이언트가 데이터베이스에 있는지 확인
+    db.get('SELECT * FROM clients WHERE name = ?', [name], (err, existingClient) => {
+      if (err) {
+        console.error(`❌ 클라이언트 조회 실패: ${name} - ${err.message}`);
+        return;
       }
-    );
+      
+      if (existingClient) {
+        // 기존 클라이언트가 있으면 상태 업데이트
+        db.run(
+          'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
+          ['online', now, name],
+          (err) => {
+            if (!err) {
+              console.log(`💓 하트비트 수신: ${name} (시간: ${timeStr})`);
+            } else {
+              console.error(`❌ 하트비트 업데이트 실패: ${name} - ${err.message}`);
+            }
+          }
+        );
+      } else {
+        // 클라이언트가 데이터베이스에 없으면 자동으로 재등록
+        console.log(`🔄 삭제된 클라이언트 자동 재등록: ${name} (IP: ${clientIP})`);
+        
+        const clientInfo = {
+          name: name,
+          ip_address: clientIP,
+          port: 8081,
+          status: 'online'
+        };
+        
+        db.run(
+          'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
+          [clientInfo.name, clientInfo.ip_address, clientInfo.port, clientInfo.status],
+          function(err) {
+            if (!err) {
+              const newClient = { ...clientInfo, id: this.lastID };
+              connectedClients.set(name, socket);
+              socket.clientName = name;
+              socket.clientType = 'python';
+              
+              console.log(`✅ 삭제된 클라이언트 자동 재등록 완료: ${name} (ID: ${this.lastID})`);
+              io.emit('client_added', newClient);
+              io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
+            } else {
+              console.error(`❌ 삭제된 클라이언트 자동 재등록 실패: ${name} - ${err.message}`);
+            }
+          }
+        );
+      }
+    });
   });
   
   // 명령 실행 결과 응답
