@@ -35,31 +35,34 @@ function initializeDatabase() {
   const tables = [
     `CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name VARCHAR(255) UNIQUE NOT NULL,
-      ip_address VARCHAR(45) NOT NULL,
+      name TEXT UNIQUE NOT NULL,
+      ip_address TEXT,
       port INTEGER DEFAULT 8081,
-      status VARCHAR(50) DEFAULT 'offline',
+      status TEXT DEFAULT 'offline',
       last_seen DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE TABLE IF NOT EXISTS groups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name VARCHAR(255) UNIQUE NOT NULL,
+      name TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE TABLE IF NOT EXISTS group_clients (
-      group_id INTEGER,
-      client_id INTEGER,
-      PRIMARY KEY (group_id, client_id),
-      FOREIGN KEY (group_id) REFERENCES groups (id),
-      FOREIGN KEY (client_id) REFERENCES clients (id)
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL,
+      client_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
+      FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE,
+      UNIQUE(group_id, client_id)
     )`,
     `CREATE TABLE IF NOT EXISTS presets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name VARCHAR(255) UNIQUE NOT NULL,
+      name TEXT NOT NULL,
       description TEXT,
       target_group_id INTEGER,
       client_commands TEXT,
+      is_active BOOLEAN DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (target_group_id) REFERENCES groups (id)
     )`,
@@ -67,10 +70,16 @@ function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       preset_id INTEGER,
       client_id INTEGER,
-      status VARCHAR(50),
-      executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (preset_id) REFERENCES presets (id),
       FOREIGN KEY (client_id) REFERENCES clients (id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS client_group_backup (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_name TEXT NOT NULL,
+      group_ids TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`
   ];
 
@@ -226,7 +235,10 @@ app.delete('/api/clients/:id', (req, res) => {
         return res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
       }
       
-      // 2. 그룹-클라이언트 연결에서 해당 클라이언트 제거
+      // 2. 클라이언트 그룹 설정 백업 (삭제 전에)
+      backupClientGroupSettings(client.name, id);
+      
+      // 3. 그룹-클라이언트 연결에서 해당 클라이언트 제거
       db.run('DELETE FROM group_clients WHERE client_id = ?', [id], (err) => {
         if (err) {
           db.run('ROLLBACK');
@@ -234,7 +246,7 @@ app.delete('/api/clients/:id', (req, res) => {
         }
       });
       
-      // 3. 클라이언트 삭제
+      // 4. 클라이언트 삭제
       db.run('DELETE FROM clients WHERE id = ?', [id], function(err) {
         if (err) {
           db.run('ROLLBACK');
@@ -246,7 +258,7 @@ app.delete('/api/clients/:id', (req, res) => {
           return res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
         }
         
-        // 4. 트랜잭션 커밋
+        // 5. 트랜잭션 커밋
         db.run('COMMIT', (err) => {
           if (err) {
             return res.status(500).json({ error: `트랜잭션 커밋 실패: ${err.message}` });
@@ -583,18 +595,23 @@ app.delete('/api/presets/:id', (req, res) => {
 // 프리셋 실행 API
 app.post('/api/presets/:id/execute', (req, res) => {
   const { id } = req.params;
+  console.log(`🚀 프리셋 실행 요청: ID ${id}`);
   
   // 프리셋 정보 조회
   db.get('SELECT * FROM presets WHERE id = ?', [id], (err, preset) => {
     if (err) {
+      console.error(`❌ 프리셋 조회 실패: ${err.message}`);
       res.status(500).json({ error: err.message });
       return;
     }
     
     if (!preset) {
+      console.error(`❌ 프리셋을 찾을 수 없음: ID ${id}`);
       res.status(404).json({ error: '프리셋을 찾을 수 없습니다.' });
       return;
     }
+    
+    console.log(`📋 프리셋 정보: ${preset.name}, 그룹 ID: ${preset.target_group_id}`);
     
     // 타겟 그룹의 클라이언트들 조회
     let query = 'SELECT c.* FROM clients c';
@@ -605,20 +622,29 @@ app.post('/api/presets/:id/execute', (req, res) => {
       params.push(preset.target_group_id);
     }
     
+    console.log(`🔍 클라이언트 조회 쿼리: ${query}, 파라미터: ${params}`);
+    
     db.all(query, params, (err, clients) => {
       if (err) {
+        console.error(`❌ 클라이언트 조회 실패: ${err.message}`);
         res.status(500).json({ error: err.message });
         return;
       }
+      
+      console.log(`👥 조회된 클라이언트: ${clients.length}개`);
+      clients.forEach(client => {
+        console.log(`  - ${client.name} (ID: ${client.id}, 상태: ${client.status})`);
+      });
       
       // client_commands JSON 파싱
       let clientCommands = {};
       try {
         if (preset.client_commands) {
           clientCommands = JSON.parse(preset.client_commands);
+          console.log(`📝 파싱된 명령어:`, clientCommands);
         }
       } catch (e) {
-        console.error('client_commands JSON 파싱 실패:', e);
+        console.error('❌ client_commands JSON 파싱 실패:', e);
         res.status(500).json({ error: '클라이언트 명령어 파싱 실패' });
         return;
       }
@@ -627,21 +653,36 @@ app.post('/api/presets/:id/execute', (req, res) => {
       const onlineClients = clients.filter(c => c.status === 'online' || c.status === 'running');
       const offlineClients = clients.filter(c => c.status === 'offline');
       
+      console.log(`📊 클라이언트 상태: 온라인 ${onlineClients.length}개, 오프라인 ${offlineClients.length}개`);
+      
       // 각 클라이언트에 명령 전송
       const executionResults = [];
       const warnings = [];
       
       clients.forEach(client => {
-        // 해당 클라이언트의 명령어 가져오기
+        // 해당 클라이언트의 명령어 가져오기 (clientId를 우선적으로 사용)
         const command = clientCommands[client.id] || clientCommands[client.name] || '';
+        
+        console.log(`🔍 클라이언트 ${client.name} (ID: ${client.id}) 명령어 검색:`, {
+          byId: clientCommands[client.id],
+          byName: clientCommands[client.name],
+          finalCommand: command
+        });
         
         if (!command) {
           warnings.push(`클라이언트 ${client.name}에 대한 명령어가 설정되지 않았습니다.`);
+          console.log(`⚠️ 클라이언트 ${client.name}에 명령어 없음`);
           return;
         }
         
         // Socket.io를 통해 클라이언트에 명령 전송
         const clientSocket = connectedClients.get(client.name);
+        console.log(`🔌 클라이언트 ${client.name} 소켓 검색:`, {
+          found: !!clientSocket,
+          connected: clientSocket ? clientSocket.connected : false,
+          socketId: clientSocket ? clientSocket.id : 'N/A'
+        });
+        
         if (clientSocket && clientSocket.connected) {
           clientSocket.emit('execute_command', {
             clientId: client.id,
@@ -695,6 +736,8 @@ app.post('/api/presets/:id/execute', (req, res) => {
       if (offlineClients.length > 0) {
         responseData.warning = `⚠️ ${offlineClients.length}개 클라이언트가 오프라인 상태입니다.`;
       }
+      
+      console.log(`✅ 프리셋 실행 완료: ${executionResults.length}개 클라이언트에 명령 전송`);
       
       io.emit('preset_executed', {
         presetId: preset.id,
@@ -835,6 +878,8 @@ io.on('connection', (socket) => {
     const timeStr = new Date().toLocaleTimeString();
     const clientIP = normalizeIP(socket.handshake.address || '127.0.0.1');
     
+    console.log(`💓 하트비트 수신: ${name} (IP: ${clientIP}, 시간: ${timeStr}, 소켓 ID: ${socket.id})`);
+    
     // 먼저 클라이언트가 데이터베이스에 있는지 확인
     db.get('SELECT * FROM clients WHERE name = ?', [name], (err, existingClient) => {
       if (err) {
@@ -844,12 +889,14 @@ io.on('connection', (socket) => {
       
       if (existingClient) {
         // 기존 클라이언트가 있으면 상태 업데이트
+        console.log(`✅ 기존 클라이언트 발견: ${name} (ID: ${existingClient.id}, 상태: ${existingClient.status})`);
+        
         db.run(
           'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
           ['online', now, name],
           (err) => {
             if (!err) {
-              console.log(`💓 하트비트 수신: ${name} (시간: ${timeStr})`);
+              console.log(`💓 하트비트 업데이트 완료: ${name} (시간: ${timeStr})`);
             } else {
               console.error(`❌ 하트비트 업데이트 실패: ${name} - ${err.message}`);
             }
@@ -857,7 +904,7 @@ io.on('connection', (socket) => {
         );
       } else {
         // 클라이언트가 데이터베이스에 없으면 자동으로 재등록
-        console.log(`🔄 삭제된 클라이언트 자동 재등록: ${name} (IP: ${clientIP})`);
+        console.log(`🔄 삭제된 클라이언트 자동 재등록 시작: ${name} (IP: ${clientIP}, 소켓 ID: ${socket.id})`);
         
         const clientInfo = {
           name: name,
@@ -865,6 +912,8 @@ io.on('connection', (socket) => {
           port: 8081,
           status: 'online'
         };
+        
+        console.log(`📝 새 클라이언트 정보:`, clientInfo);
         
         db.run(
           'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
@@ -877,15 +926,15 @@ io.on('connection', (socket) => {
               socket.clientType = 'python';
               
               console.log(`✅ 삭제된 클라이언트 자동 재등록 완료: ${name} (ID: ${this.lastID})`);
+              console.log(`🔗 소켓 연결 정보: ${name} -> 소켓 ID ${socket.id}`);
               
-              // 기존 그룹 연결 정보 복원 (삭제 전에 속해있던 그룹들)
-              // 주의: group_clients 테이블에는 client_id만 저장되므로, 
-              // 클라이언트가 삭제되면 그룹 연결 정보도 함께 삭제됩니다.
-              // 따라서 그룹 연결 복원은 불가능하므로 새로 등록된 클라이언트는 그룹에 수동으로 다시 추가해야 합니다.
-              console.log(`ℹ️ 클라이언트 ${name} 재등록 완료. 그룹 연결은 수동으로 다시 설정해주세요.`);
+              // 클라이언트 복구 시 원래 그룹 설정 복원
+              restoreClientGroupSettings(name, this.lastID);
               
               io.emit('client_added', newClient);
               io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
+              
+              console.log(`📡 클라이언트 추가 이벤트 전송 완료: ${name}`);
             } else {
               console.error(`❌ 삭제된 클라이언트 자동 재등록 실패: ${name} - ${err.message}`);
             }
@@ -894,6 +943,58 @@ io.on('connection', (socket) => {
       }
     });
   });
+  
+  // 클라이언트 그룹 설정 복원 함수
+  function restoreClientGroupSettings(clientName, clientId) {
+    console.log(`🔄 클라이언트 ${clientName} 그룹 설정 복원 시작`);
+    
+    // 백업된 그룹 설정 조회
+    db.get(
+      'SELECT group_ids FROM client_group_backup WHERE client_name = ?',
+      [clientName],
+      (err, backup) => {
+        if (err) {
+          console.error(`❌ 그룹 설정 복원 조회 실패: ${clientName} - ${err.message}`);
+          return;
+        }
+        
+        if (backup && backup.group_ids) {
+          try {
+            const groupIds = JSON.parse(backup.group_ids);
+            console.log(`📋 복원할 그룹 ID들: ${groupIds.join(', ')}`);
+            
+            // 각 그룹에 클라이언트 다시 추가
+            groupIds.forEach(groupId => {
+              db.run(
+                'INSERT OR IGNORE INTO group_clients (group_id, client_id) VALUES (?, ?)',
+                [groupId, clientId],
+                function(err) {
+                  if (!err && this.changes > 0) {
+                    console.log(`✅ 그룹 ID ${groupId}에 클라이언트 ${clientName} 복원 완료`);
+                  } else if (this.changes === 0) {
+                    console.log(`ℹ️ 그룹 ID ${groupId}에 클라이언트 ${clientName} 이미 존재`);
+                  } else {
+                    console.error(`❌ 그룹 ID ${groupId} 복원 실패: ${err.message}`);
+                  }
+                }
+              );
+            });
+            
+            // 그룹 정보 업데이트 이벤트 전송
+            setTimeout(() => {
+              io.emit('groups_updated');
+              console.log(`📡 그룹 업데이트 이벤트 전송 완료: ${clientName}`);
+            }, 1000);
+            
+          } catch (parseError) {
+            console.error(`❌ 그룹 ID 파싱 실패: ${clientName} - ${parseError.message}`);
+          }
+        } else {
+          console.log(`ℹ️ 클라이언트 ${clientName}의 복원할 그룹 설정 없음`);
+        }
+      }
+    );
+  }
   
   // 명령 실행 결과 응답
   socket.on('execution_result', (data) => {
@@ -1046,7 +1147,7 @@ setInterval(() => {
             }
           );
         } else {
-          console.log('✅ 오프라인으로 변경될 클라이언트 없음 (모든 클라이언트가 소켓 연결됨)');
+          console.log('✅ 오프라인으로 변경될 클라이언트 없음');
         }
       } else {
         console.log('✅ 오프라인으로 변경될 클라이언트 없음');

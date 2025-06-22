@@ -123,27 +123,38 @@ class SwitchboardClient:
     def connect_socket(self):
         """Socket.io 연결을 설정합니다."""
         try:
+            print(f"🔌 소켓 연결 시도: {self.server_url}")
             self.sio.connect(self.server_url)
             self.running = True  # 하트비트 루프를 위해 running 플래그 설정
+            print(f"✅ Socket.io 연결 성공: {self.client_name}")
             logging.info("Socket.io 연결 성공")
             return True
         except Exception as e:
+            print(f"❌ Socket.io 연결 실패: {e}")
             logging.error(f"Socket.io 연결 실패: {e}")
             return False
     
     def on_connect(self):
         """Socket.io 연결 시 호출됩니다."""
+        print(f"🔌 서버에 연결되었습니다: {self.client_name}")
         logging.info("서버에 연결되었습니다")
+        
+        # 클라이언트 등록
         self.sio.emit('register_client', {
             'name': self.client_name,
             'clientType': 'python'
         })
+        print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
+        
         self.start_heartbeat()
     
     def on_disconnect(self):
         """Socket.io 연결 해제 시 호출됩니다."""
+        print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
         logging.info("서버와의 연결이 해제되었습니다")
-        print("⚠️ 서버와의 연결이 해제되었습니다. 재연결을 시도합니다...")
+        
+        # 연결 해제되어도 클라이언트는 계속 실행 (하트비트는 계속 보냄)
+        print(f"⚠️ 연결이 끊어졌지만 클라이언트는 계속 실행됩니다. 하트비트를 계속 전송합니다.")
     
     def start_heartbeat(self):
         """하트비트 전송을 시작합니다."""
@@ -152,21 +163,38 @@ class SwitchboardClient:
             print(f"💓 하트비트 루프 시작 - 클라이언트: {self.client_name}")
             logging.info(f"하트비트 루프 시작 - 클라이언트: {self.client_name}")
             
-            while self.running:
+            # Ctrl+C로 종료 가능한 하트비트 루프
+            while self.running:  # True 대신 self.running 사용
                 try:
                     heartbeat_count += 1
-                    self.sio.emit('heartbeat', {
-                        'name': self.client_name
-                    })
-                    print(f"💓 하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
-                    logging.info(f"하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
+                    print(f"💓 하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
+                    
+                    # 하트비트 전송 (연결 상태와 관계없이 시도)
+                    try:
+                        print(f"📤 하트비트 전송 중: {self.client_name} -> 서버")
+                        self.sio.emit('heartbeat', {
+                            'name': self.client_name
+                        })
+                        print(f"💓 하트비트 전송 완료 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
+                        logging.info(f"하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
+                    except Exception as heartbeat_error:
+                        print(f"⚠️ 하트비트 전송 실패: {heartbeat_error}")
+                        # 하트비트 전송 실패해도 계속 시도
+                        print(f"⚠️ 하트비트 전송 실패했지만 계속 시도합니다.")
+                    
                     time.sleep(5)  # 5초마다 하트비트
+                except KeyboardInterrupt:
+                    print(f"\n🛑 하트비트 루프에서 사용자에 의해 종료됨: {self.client_name}")
+                    break
                 except Exception as e:
-                    print(f"❌ 하트비트 전송 실패: {e} - {datetime.now().strftime('%H:%M:%S')}")
-                    logging.error(f"하트비트 전송 실패: {e}")
+                    print(f"❌ 하트비트 루프 오류: {e} - {datetime.now().strftime('%H:%M:%S')}")
+                    logging.error(f"하트비트 루프 오류: {e}")
+                    print(f"⚠️ 하트비트 루프 오류가 발생했지만 계속 실행합니다.")
                     time.sleep(5)
+            
+            print(f"💓 하트비트 루프 종료: {self.client_name}")
         
-        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)  # daemon=True로 변경
         heartbeat_thread.start()
         print("💓 하트비트 스레드 시작 (5초 간격)")
         logging.info("하트비트 스레드 시작 (5초 간격)")
@@ -176,8 +204,9 @@ class SwitchboardClient:
         reason = data.get('reason', '알 수 없는 이유')
         logging.error(f"서버 등록 실패: {reason}")
         print(f"❌ 서버 등록 실패: {reason}")
-        self.running = False
-        self.sio.disconnect()
+        
+        # 등록 실패해도 클라이언트는 계속 실행 (하트비트는 계속 보냄)
+        print(f"⚠️ 등록 실패했지만 클라이언트는 계속 실행됩니다. 하트비트를 계속 전송합니다.")
     
     def on_execute_command(self, data):
         """서버로부터 명령 실행 요청을 받습니다."""
@@ -185,32 +214,53 @@ class SwitchboardClient:
             command = data.get('command')
             target_client_id = data.get('clientId')
             target_client_name = data.get('clientName')
+            preset_id = data.get('presetId')
+            
+            print(f"📨 명령어 수신: {data}")
+            logging.info(f"명령어 수신: {data}")
             
             # 클라이언트 ID나 이름으로 대상 확인
+            print(f"🔍 대상 확인: 받은 ID={target_client_id}, 내 ID={self.client_id}, 받은 이름={target_client_name}, 내 이름={self.client_name}")
+            
             if target_client_id and target_client_id != self.client_id:
+                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
+                logging.info(f"클라이언트 ID 불일치로 명령 무시: {target_client_id} != {self.client_id}")
                 return
             if target_client_name and target_client_name != self.client_name:
+                print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
+                logging.info(f"클라이언트 이름 불일치로 명령 무시: {target_client_name} != {self.client_name}")
                 return
             
+            print(f"✅ 명령어 대상 확인 완료 - 실행 시작")
             logging.info(f"명령 실행 요청: {command}")
             print(f"⚡ 명령 실행: {command}")
+            
             result = self.execute_command(command)
             
+            print(f"📤 실행 결과 전송: {result}")
             self.sio.emit('execution_result', {
                 'executionId': data.get('executionId'),
-                'status': 'completed' if result['success'] else 'failed',
-                'result': result
+                'clientId': self.client_id,
+                'clientName': self.client_name,
+                'command': command,
+                'result': result,
+                'presetId': preset_id,
+                'timestamp': datetime.now().isoformat()
             })
             
-            print(f"✅ 명령 실행 완료: {'성공' if result['success'] else '실패'}")
-            
         except Exception as e:
-            logging.error(f"명령 실행 중 오류: {e}")
-            print(f"❌ 명령 실행 실패: {e}")
+            error_msg = f"명령 실행 중 오류: {e}"
+            logging.error(error_msg)
+            print(f"❌ {error_msg}")
+            
             self.sio.emit('execution_result', {
                 'executionId': data.get('executionId'),
-                'status': 'failed',
-                'result': {'error': str(e)}
+                'clientId': self.client_id,
+                'clientName': self.client_name,
+                'command': data.get('command'),
+                'result': {'error': error_msg},
+                'presetId': data.get('presetId'),
+                'timestamp': datetime.now().isoformat()
             })
     
     def on_connection_check(self, data):
@@ -294,35 +344,72 @@ class SwitchboardClient:
             logging.info("클라이언트 시작")
             print(f"🚀 Switchboard Plus Client 시작: {self.client_name}")
             
-            # 서버에 등록 시도
-            if self.register_with_server():
-                # Socket.io 연결 시도
+            # 서버에 등록 시도 (실패해도 계속 실행)
+            try:
+                if self.register_with_server():
+                    print("✅ 서버 등록 성공")
+                else:
+                    print("⚠️ 서버 등록 실패, 독립 실행 모드")
+            except Exception as e:
+                print(f"⚠️ 서버 등록 중 오류: {e}, 독립 실행 모드")
+            
+            # Socket.io 연결 시도 (실패해도 계속 실행)
+            try:
                 if self.connect_socket():
-                    print("✅ 서버에 연결되었습니다")
+                    print("✅ Socket.io 연결 성공")
                 else:
                     print("⚠️ Socket.io 연결 실패, 독립 실행 모드")
-                    self.running = True
-            else:
-                print("⚠️ 서버 등록 실패, 독립 실행 모드")
-                self.running = True
+            except Exception as e:
+                print(f"⚠️ Socket.io 연결 중 오류: {e}, 독립 실행 모드")
             
-            # 메인 루프
-            while self.running:
-                time.sleep(1)
+            # 클라이언트는 항상 실행 상태로 유지
+            self.running = True
+            print(f"✅ 클라이언트 실행 상태 설정: {self.client_name}")
+            
+            # Ctrl+C로 종료 가능한 메인 루프
+            while self.running:  # True 대신 self.running 사용
+                try:
+                    time.sleep(1)
+                except KeyboardInterrupt:
+                    print("\n🛑 사용자에 의해 종료됨")
+                    self.running = False
+                    break
+                except Exception as e:
+                    print(f"❌ 메인 루프 오류: {e}")
+                    print(f"⚠️ 메인 루프 오류가 발생했지만 계속 실행합니다.")
+                    time.sleep(1)
                 
         except KeyboardInterrupt:
             print("\n🛑 사용자에 의해 종료됨")
         except Exception as e:
             logging.error(f"클라이언트 실행 중 오류: {e}")
+            print(f"❌ 클라이언트 실행 중 오류: {e}")
+            # 오류가 발생해도 클라이언트는 계속 실행
+            print(f"⚠️ 오류가 발생했지만 클라이언트는 계속 실행됩니다.")
+            while self.running:
+                try:
+                    time.sleep(1)
+                except KeyboardInterrupt:
+                    print("\n🛑 사용자에 의해 종료됨")
+                    break
         finally:
             self.stop()
     
     def stop(self):
         """클라이언트를 중지합니다."""
+        print(f"🛑 클라이언트 종료 중: {self.client_name}")
         self.running = False
-        if self.sio.connected:
-            self.sio.disconnect()
+        
+        try:
+            if self.sio.connected:
+                print(f"🔌 소켓 연결 해제 중: {self.client_name}")
+                self.sio.disconnect()
+                print(f"✅ 소켓 연결 해제 완료: {self.client_name}")
+        except Exception as e:
+            print(f"⚠️ 소켓 연결 해제 중 오류: {e}")
+        
         logging.info("클라이언트 종료")
+        print(f"✅ 클라이언트 종료 완료: {self.client_name}")
 
 def main():
     """메인 함수"""
