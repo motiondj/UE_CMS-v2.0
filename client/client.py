@@ -184,11 +184,16 @@ class SwitchboardClient:
         try:
             command = data.get('command')
             target_client_id = data.get('clientId')
+            target_client_name = data.get('clientName')
             
+            # 클라이언트 ID나 이름으로 대상 확인
             if target_client_id and target_client_id != self.client_id:
+                return
+            if target_client_name and target_client_name != self.client_name:
                 return
             
             logging.info(f"명령 실행 요청: {command}")
+            print(f"⚡ 명령 실행: {command}")
             result = self.execute_command(command)
             
             self.sio.emit('execution_result', {
@@ -197,8 +202,11 @@ class SwitchboardClient:
                 'result': result
             })
             
+            print(f"✅ 명령 실행 완료: {'성공' if result['success'] else '실패'}")
+            
         except Exception as e:
             logging.error(f"명령 실행 중 오류: {e}")
+            print(f"❌ 명령 실행 실패: {e}")
             self.sio.emit('execution_result', {
                 'executionId': data.get('executionId'),
                 'status': 'failed',

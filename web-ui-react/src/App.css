@@ -348,6 +348,11 @@ body {
     font-weight: 500;
 }
 
+.status-indicator {
+    margin-left: 4px;
+    font-size: 10px;
+}
+
 /* 일괄 제어 UI */
 .bulk-controls {
     background: var(--bg-tertiary);

@@ -129,8 +129,44 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
     }
   };
   
-  const runPreset = (preset) => {
-    showToast(`프리셋 "${preset.name}" 실행 (v2.5에서 활성화)`, 'info');
+  const runPreset = async (preset) => {
+    try {
+      const response = await fetch(`${apiBase}/api/presets/${preset.id}/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || '프리셋 실행 실패');
+      }
+      
+      const result = await response.json();
+      
+      // 실행 결과 토스트 표시
+      if (result.warning) {
+        showToast(result.warning, 'warning');
+      }
+      
+      if (result.warnings && result.warnings.length > 0) {
+        result.warnings.forEach(warning => {
+          showToast(warning, 'warning');
+        });
+      }
+      
+      // 실행 요약 토스트
+      const summary = result.summary;
+      if (summary) {
+        const message = `프리셋 "${preset.name}" 실행 완료: ${summary.executed}/${summary.total}개 클라이언트 (온라인: ${summary.online}, 오프라인: ${summary.offline})`;
+        showToast(message, summary.offline > 0 ? 'warning' : 'success');
+      } else {
+        showToast(`프리셋 "${preset.name}" 실행이 시작되었습니다.`, 'success');
+      }
+    } catch (error) {
+      showToast(`프리셋 실행 실패: ${error.message}`, 'error');
+    }
   };
 
   const bulkPresetAction = (action) => {

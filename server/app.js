@@ -26,6 +26,7 @@ const db = new sqlite3.Database('./switchboard.db', (err) => {
   } else {
     console.log('SQLite 데이터베이스에 연결되었습니다.');
     initializeDatabase();
+    checkDatabaseIntegrity();
   }
 });
 
@@ -80,6 +81,50 @@ function initializeDatabase() {
       }
     });
   });
+}
+
+// 데이터베이스 무결성 검사 및 복구
+function checkDatabaseIntegrity() {
+  console.log('🔍 데이터베이스 무결성 검사 중...');
+  
+  // 1. 존재하지 않는 클라이언트를 참조하는 그룹 연결 정리
+  db.run(`
+    DELETE FROM group_clients 
+    WHERE client_id NOT IN (SELECT id FROM clients)
+  `, function(err) {
+    if (err) {
+      console.error('❌ 그룹-클라이언트 연결 정리 실패:', err.message);
+    } else if (this.changes > 0) {
+      console.log(`✅ ${this.changes}개의 무효한 그룹-클라이언트 연결 정리됨`);
+    }
+  });
+  
+  // 2. 존재하지 않는 그룹을 참조하는 프리셋 정리
+  db.run(`
+    UPDATE presets 
+    SET target_group_id = NULL 
+    WHERE target_group_id NOT IN (SELECT id FROM groups)
+  `, function(err) {
+    if (err) {
+      console.error('❌ 프리셋 그룹 참조 정리 실패:', err.message);
+    } else if (this.changes > 0) {
+      console.log(`✅ ${this.changes}개의 무효한 프리셋 그룹 참조 정리됨`);
+    }
+  });
+  
+  // 3. 존재하지 않는 클라이언트를 참조하는 실행 히스토리 정리
+  db.run(`
+    DELETE FROM execution_history 
+    WHERE client_id NOT IN (SELECT id FROM clients)
+  `, function(err) {
+    if (err) {
+      console.error('❌ 실행 히스토리 정리 실패:', err.message);
+    } else if (this.changes > 0) {
+      console.log(`✅ ${this.changes}개의 무효한 실행 히스토리 정리됨`);
+    }
+  });
+  
+  console.log('✅ 데이터베이스 무결성 검사 완료');
 }
 
 // 헬스 체크 API
@@ -165,19 +210,54 @@ app.put('/api/clients/:id', (req, res) => {
 app.delete('/api/clients/:id', (req, res) => {
   const { id } = req.params;
   
-  db.run('DELETE FROM clients WHERE id = ?', [id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
+  // 트랜잭션으로 클라이언트 삭제와 그룹 연결 제거를 함께 처리
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
     
-    if (this.changes === 0) {
-      res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
-      return;
-    }
-    
-    io.emit('client_deleted', { id: parseInt(id) });
-    res.json({ message: '클라이언트가 삭제되었습니다.' });
+    // 1. 먼저 클라이언트 정보 조회 (삭제 전에 필요)
+    db.get('SELECT * FROM clients WHERE id = ?', [id], (err, client) => {
+      if (err) {
+        db.run('ROLLBACK');
+        return res.status(500).json({ error: err.message });
+      }
+      
+      if (!client) {
+        db.run('ROLLBACK');
+        return res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
+      }
+      
+      // 2. 그룹-클라이언트 연결에서 해당 클라이언트 제거
+      db.run('DELETE FROM group_clients WHERE client_id = ?', [id], (err) => {
+        if (err) {
+          db.run('ROLLBACK');
+          return res.status(500).json({ error: `그룹 연결 제거 실패: ${err.message}` });
+        }
+      });
+      
+      // 3. 클라이언트 삭제
+      db.run('DELETE FROM clients WHERE id = ?', [id], function(err) {
+        if (err) {
+          db.run('ROLLBACK');
+          return res.status(500).json({ error: err.message });
+        }
+        
+        if (this.changes === 0) {
+          db.run('ROLLBACK');
+          return res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
+        }
+        
+        // 4. 트랜잭션 커밋
+        db.run('COMMIT', (err) => {
+          if (err) {
+            return res.status(500).json({ error: `트랜잭션 커밋 실패: ${err.message}` });
+          }
+          
+          console.log(`🗑️ 클라이언트 삭제 완료: ${client.name} (ID: ${id})`);
+          io.emit('client_deleted', { id: parseInt(id) });
+          res.json({ message: '클라이언트가 삭제되었습니다.' });
+        });
+      });
+    });
   });
 });
 
@@ -189,10 +269,11 @@ app.get('/api/groups', (req, res) => {
       g.name, 
       g.created_at,
       (
-        SELECT json_group_array(json_object('id', c.id, 'name', c.name, 'ip_address', c.ip_address, 'status', c.status))
+        SELECT json_group_array(json_object('id', c.id, 'name', c.name, 'ip_address', c.ip_address, 'status', c.status, 'last_seen', c.last_seen))
         FROM group_clients gc
         JOIN clients c ON gc.client_id = c.id
         WHERE gc.group_id = g.id
+        ORDER BY c.name
       ) as clients
     FROM groups g
     ORDER BY g.created_at DESC
@@ -530,15 +611,50 @@ app.post('/api/presets/:id/execute', (req, res) => {
         return;
       }
       
+      // client_commands JSON 파싱
+      let clientCommands = {};
+      try {
+        if (preset.client_commands) {
+          clientCommands = JSON.parse(preset.client_commands);
+        }
+      } catch (e) {
+        console.error('client_commands JSON 파싱 실패:', e);
+        res.status(500).json({ error: '클라이언트 명령어 파싱 실패' });
+        return;
+      }
+      
+      // 클라이언트 상태 분석
+      const onlineClients = clients.filter(c => c.status === 'online' || c.status === 'running');
+      const offlineClients = clients.filter(c => c.status === 'offline');
+      
       // 각 클라이언트에 명령 전송
       const executionResults = [];
+      const warnings = [];
+      
       clients.forEach(client => {
+        // 해당 클라이언트의 명령어 가져오기
+        const command = clientCommands[client.id] || clientCommands[client.name] || '';
+        
+        if (!command) {
+          warnings.push(`클라이언트 ${client.name}에 대한 명령어가 설정되지 않았습니다.`);
+          return;
+        }
+        
         // Socket.io를 통해 클라이언트에 명령 전송
-        io.emit('execute_command', {
-          clientId: client.id,
-          command: preset.command,
-          presetId: preset.id
-        });
+        const clientSocket = connectedClients.get(client.name);
+        if (clientSocket && clientSocket.connected) {
+          clientSocket.emit('execute_command', {
+            clientId: client.id,
+            clientName: client.name,
+            command: command,
+            presetId: preset.id
+          });
+          console.log(`📤 클라이언트 ${client.name}에 명령 전송: ${command}`);
+        } else {
+          // 오프라인 클라이언트는 명령을 전송하지 않고 경고만 추가
+          warnings.push(`클라이언트 ${client.name}가 연결되지 않았습니다.`);
+          console.log(`⚠️ 오프라인 클라이언트 ${client.name} - 명령 전송 건너뜀`);
+        }
         
         // 실행 히스토리 기록
         db.run(
@@ -549,7 +665,7 @@ app.post('/api/presets/:id/execute', (req, res) => {
               executionResults.push({
                 clientId: client.id,
                 clientName: client.name,
-                status: 'executing',
+                status: client.status,
                 executionId: this.lastID
               });
             }
@@ -557,17 +673,37 @@ app.post('/api/presets/:id/execute', (req, res) => {
         );
       });
       
+      // 응답 데이터 구성
+      const responseData = {
+        message: '프리셋이 실행되었습니다.',
+        preset: preset,
+        clients: executionResults,
+        summary: {
+          total: clients.length,
+          online: onlineClients.length,
+          offline: offlineClients.length,
+          executed: executionResults.length
+        }
+      };
+      
+      // 경고가 있으면 추가
+      if (warnings.length > 0) {
+        responseData.warnings = warnings;
+      }
+      
+      // 오프라인 클라이언트가 있으면 경고 추가
+      if (offlineClients.length > 0) {
+        responseData.warning = `⚠️ ${offlineClients.length}개 클라이언트가 오프라인 상태입니다.`;
+      }
+      
       io.emit('preset_executed', {
         presetId: preset.id,
         presetName: preset.name,
-        clients: executionResults
+        clients: executionResults,
+        warnings: warnings
       });
       
-      res.json({
-        message: '프리셋이 실행되었습니다.',
-        preset: preset,
-        clients: executionResults
-      });
+      res.json(responseData);
     });
   });
 });
@@ -741,6 +877,13 @@ io.on('connection', (socket) => {
               socket.clientType = 'python';
               
               console.log(`✅ 삭제된 클라이언트 자동 재등록 완료: ${name} (ID: ${this.lastID})`);
+              
+              // 기존 그룹 연결 정보 복원 (삭제 전에 속해있던 그룹들)
+              // 주의: group_clients 테이블에는 client_id만 저장되므로, 
+              // 클라이언트가 삭제되면 그룹 연결 정보도 함께 삭제됩니다.
+              // 따라서 그룹 연결 복원은 불가능하므로 새로 등록된 클라이언트는 그룹에 수동으로 다시 추가해야 합니다.
+              console.log(`ℹ️ 클라이언트 ${name} 재등록 완료. 그룹 연결은 수동으로 다시 설정해주세요.`);
+              
               io.emit('client_added', newClient);
               io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
             } else {
@@ -804,6 +947,19 @@ io.on('connection', (socket) => {
         console.log(`⚠️ 다른 소켓이 이미 등록되어 있음 - 소켓 제거 건너뜀: ${socket.clientName}`);
       }
     }
+  });
+
+  // 클라이언트 상태 변경 이벤트 처리
+  socket.on('client_status_changed', (data) => {
+    console.log('📊 클라이언트 상태 변경:', data);
+    setClients(prev => prev.map(client => 
+      client.name === data.name 
+        ? { ...client, status: data.status }
+        : client
+    ));
+    
+    // 그룹 정보도 함께 업데이트 (클라이언트 상태 변경이 그룹에 반영되도록)
+    loadGroups();
   });
 });
 
