@@ -289,4 +289,78 @@
   .client-details {
     width: 100%;
   }
-} 
+}
+
+.modal-column-container {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.modal-column {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.info-section {
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border-color);
+  height: 100%;
+}
+
+.info-section h4 {
+  margin: 0 0 10px 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.danger-section .button-group.vertical,
+.power-control-section .button-group.vertical {
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.performance-section {
+  margin-top: 20px;
+}
+
+.performance-section .info-grid.horizontal {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+/* 수직 버튼 그룹 */
+.button-group.vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 10px; /* 버튼 간 간격 조정 */
+}
+
+.button-group.vertical .btn {
+  width: 100%;
+  padding: 10px 0; /* 상하 패딩을 늘려 버튼 높이 확보 */
+  font-size: 14px; /* 폰트 크기 살짝 키움 */
+  text-align: center;
+}

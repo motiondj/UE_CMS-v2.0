@@ -81,6 +81,15 @@ function initializeDatabase() {
   });
 }
 
+// 헬스 체크 API
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    server: 'Switchboard Plus Server v2.0'
+  });
+});
+
 // 클라이언트 관리 API
 app.get('/api/clients', (req, res) => {
   db.all('SELECT * FROM clients ORDER BY created_at DESC', (err, rows) => {
@@ -117,6 +126,35 @@ app.post('/api/clients', (req, res) => {
         }
         
         io.emit('client_added', row);
+        res.json(row);
+      });
+    }
+  );
+});
+
+app.put('/api/clients/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, ip_address, port } = req.body;
+
+  if (!name || !ip_address) {
+    res.status(400).json({ error: '이름과 IP 주소는 필수입니다.' });
+    return;
+  }
+
+  db.run(
+    'UPDATE clients SET name = ?, ip_address = ?, port = ? WHERE id = ?',
+    [name, ip_address, port, id],
+    function (err) {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      db.get('SELECT * FROM clients WHERE id = ?', [id], (err, row) => {
+        if (err) {
+          res.status(500).json({ error: err.message });
+          return;
+        }
+        io.emit('client_updated', row);
         res.json(row);
       });
     }

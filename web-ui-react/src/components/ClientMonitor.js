@@ -5,6 +5,8 @@ const ClientMonitor = ({ clients, showToast }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editFormData, setEditFormData] = useState({});
   const [formData, setFormData] = useState({
     name: '',
     ip_address: '',
@@ -35,16 +37,59 @@ const ClientMonitor = ({ clients, showToast }) => {
 
   const showClientDetail = (client) => {
     setSelectedClient(client);
+    setEditFormData({
+      name: client.name,
+      ip_address: client.ip_address,
+      port: client.port,
+    });
+    setIsEditing(false);
     setShowDetailModal(true);
   };
 
-  const deleteClient = () => {
+  const handleUpdateClient = async (e) => {
+    e.preventDefault();
+    if (!selectedClient) return;
+
+    try {
+      const response = await fetch(`/api/clients/${selectedClient.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editFormData),
+      });
+      const updatedClient = await response.json();
+
+      if (response.ok) {
+        showToast(`클라이언트 "${updatedClient.name}" 정보가 수정되었습니다.`, 'success');
+        setIsEditing(false);
+        setSelectedClient(updatedClient);
+      } else {
+        throw new Error(updatedClient.error || '클라이언트 정보 수정에 실패했습니다.');
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  };
+
+  const deleteClient = async () => {
     if (!selectedClient) return;
 
     if (window.confirm(`정말 "${selectedClient.name}" 클라이언트를 삭제하시겠습니까?\n실행 중인 프로세스는 자동으로 중지됩니다.`)) {
-      showToast(`클라이언트 "${selectedClient.name}"이(가) 삭제되었습니다.`, 'error');
-      setShowDetailModal(false);
-      setSelectedClient(null);
+      try {
+        const response = await fetch(`/api/clients/${selectedClient.id}`, {
+          method: 'DELETE',
+        });
+        const data = await response.json();
+
+        if (response.ok) {
+          showToast(`클라이언트 "${selectedClient.name}"이(가) 삭제되었습니다.`, 'success');
+          setShowDetailModal(false);
+          setSelectedClient(null);
+        } else {
+          throw new Error(data.error || '클라이언트 삭제에 실패했습니다.');
+        }
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
     }
   };
 
@@ -236,33 +281,118 @@ const ClientMonitor = ({ clients, showToast }) => {
         <div className="modal show">
           <div className="modal-content">
             <div className="modal-header">
-              <h3>🖥️ {selectedClient.name} 관리</h3>
+              <h3>🖥️ {isEditing ? `${selectedClient.name} 정보 수정` : `${selectedClient.name} 관리`}</h3>
               <span className="close" onClick={() => setShowDetailModal(false)}>&times;</span>
             </div>
             
             <div className="modal-body">
-              {/* 시스템 정보 */}
-              <div className="info-section">
-                <h4>📋 시스템 정보</h4>
-                <div className="info-grid">
-                  <div>🏷️ 이름: <strong>{selectedClient.name}</strong></div>
-                  <div>🌐 IP 주소: <strong>{selectedClient.ip_address}</strong></div>
-                  <div>🔌 포트: <strong>{selectedClient.port}</strong></div>
-                  <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
-                    {selectedClient.status}
-                  </span></div>
-                  <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
-                  <div>🆔 현재 실행 ID: <span>
-                    {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
-                  </span></div>
+              {/* 3단 레이아웃 컨테이너 */}
+              <div className="modal-column-container">
+                {/* 왼쪽 단: 시스템 정보 & 성능 */}
+                <div className="modal-column modal-column-info">
+                  {/* 시스템 정보 */}
+                  <div className="info-section">
+                    <h4>📋 시스템 정보</h4>
+                    {isEditing ? (
+                      <form onSubmit={handleUpdateClient} id="edit-client-form">
+                        <div className="info-grid">
+                          <div>🏷️ 이름: <input type="text" className="form-input" name="name" value={editFormData.name} onChange={(e) => setEditFormData(p => ({...p, name: e.target.value}))} required /></div>
+                          <div>🌐 IP 주소: <input type="text" className="form-input" name="ip_address" value={editFormData.ip_address} onChange={(e) => setEditFormData(p => ({...p, ip_address: e.target.value}))} required pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$" /></div>
+                          <div>🔌 포트: <input type="number" className="form-input" name="port" value={editFormData.port} onChange={(e) => setEditFormData(p => ({...p, port: parseInt(e.target.value, 10)}))} required /></div>
+                          <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
+                            {selectedClient.status}
+                          </span></div>
+                          <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
+                          <div>🆔 현재 실행 ID: <span>
+                            {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
+                          </span></div>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="info-grid">
+                        <div>🏷️ 이름: <strong>{selectedClient.name}</strong></div>
+                        <div>🌐 IP 주소: <strong>{selectedClient.ip_address}</strong></div>
+                        <div>🔌 포트: <strong>{selectedClient.port}</strong></div>
+                        <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
+                          {selectedClient.status}
+                        </span></div>
+                        <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
+                        <div>🆔 현재 실행 ID: <span>
+                          {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
+                        </span></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 가운데 단: 설정 */}
+                <div className="modal-column modal-column-danger">
+                  <div className="danger-section info-section">
+                    <h4>⚙️ 설정</h4>
+                    <div className="button-group vertical">
+                      {!isEditing && (
+                        <button
+                          className="btn btn-secondary"
+                          onClick={() => setIsEditing(true)}
+                        >
+                          수정
+                        </button>
+                      )}
+                      <button 
+                        className="btn btn-danger" 
+                        onClick={deleteClient}
+                        title="데이터베이스에서 완전 삭제"
+                        disabled={isEditing}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                    {isEditing &&
+                      <p className="warning-text">수정 모드에서는 삭제할 수 없습니다.</p>
+                    }
+                  </div>
+                </div>
+
+                {/* 오른쪽 단: 전원 제어 */}
+                <div className="modal-column modal-column-power">
+                  <div className="info-section power-control-section">
+                    <h4>⚡ 전원 제어 <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>(v2.1)</span></h4>
+                    <div className="button-group vertical">
+                      <button 
+                        className="btn btn-primary" 
+                        onClick={() => powerAction('on')}
+                        title="Wake-on-LAN으로 전원 켜기"
+                        disabled
+                      >
+                        켜기
+                      </button>
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={() => powerAction('reboot')}
+                        title="원격 재부팅"
+                        disabled
+                      >
+                        재부팅
+                      </button>
+                      <button 
+                        className="btn btn-danger" 
+                        onClick={() => powerAction('off')}
+                        title="원격 종료"
+                        disabled
+                      >
+                        끄기
+                      </button>
+                    </div>
+                    <p className="warning-text">💡 전원 제어 기능은 v2.1에서 활성화됩니다.</p>
+                  </div>
                 </div>
               </div>
-              
-              {/* 성능 메트릭 (실행 중일 때만 표시) */}
+
+              {/* 성능 메트릭 (실행 중일 때만 표시) - 별도 행으로 분리 */}
               {selectedClient.status === 'running' && (
-                <div className="info-section">
+                <div className="info-section performance-section">
                   <h4>⚡ 성능 모니터링</h4>
-                  <div className="info-grid">
+                  <div className="info-grid horizontal">
                     <div>🖥️ CPU 사용률: <span>{Math.floor(Math.random() * 100)}%</span></div>
                     <div>💾 메모리 사용률: <span>{Math.floor(Math.random() * 100)}%</span></div>
                     <div>💿 디스크 사용률: <span>{Math.floor(Math.random() * 100)}%</span></div>
@@ -271,52 +401,24 @@ const ClientMonitor = ({ clients, showToast }) => {
                   </div>
                 </div>
               )}
-              
-              {/* 전원 제어 (v2.1 기능) */}
-              <div className="info-section">
-                <h4>⚡ 전원 제어 <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>(v2.1)</span></h4>
-                <div className="button-group">
-                  <button 
-                    className="btn btn-primary btn-with-text" 
-                    onClick={() => powerAction('on')}
-                    title="Wake-on-LAN으로 전원 켜기"
-                    disabled
-                  >
-                    🔌 전원 켜기
-                  </button>
-                  <button 
-                    className="btn btn-secondary btn-with-text" 
-                    onClick={() => powerAction('reboot')}
-                    title="원격 재부팅"
-                    disabled
-                  >
-                    🔄 재부팅
-                  </button>
-                  <button 
-                    className="btn btn-danger btn-with-text" 
-                    onClick={() => powerAction('off')}
-                    title="원격 종료"
-                    disabled
-                  >
-                    ⚡ 전원 끄기
-                  </button>
-                </div>
-                <p className="warning-text">💡 전원 제어 기능은 v2.1에서 활성화됩니다.</p>
-              </div>
-              
-              {/* 위험 구역 */}
-              <div className="danger-section">
-                <h4>⚠️ 위험 구역</h4>
-                <button 
-                  className="btn btn-danger btn-with-text" 
-                  onClick={deleteClient}
-                  title="데이터베이스에서 완전 삭제"
-                >
-                  🗑️ 클라이언트 삭제
-                </button>
-                <p className="warning-text">⚠️ 삭제하면 데이터베이스에서 완전히 제거되며 복구할 수 없습니다.</p>
-              </div>
             </div>
+            {isEditing && (
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => {
+                  setIsEditing(false);
+                  setEditFormData({
+                    name: selectedClient.name,
+                    ip_address: selectedClient.ip_address,
+                    port: selectedClient.port,
+                  });
+                }}>
+                  취소
+                </button>
+                <button type="submit" form="edit-client-form" className="btn btn-primary">
+                  저장
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
