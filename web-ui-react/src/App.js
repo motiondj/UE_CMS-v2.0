@@ -86,86 +86,126 @@ function App() {
 
     // 클라이언트 상태 변경 이벤트 처리
     newSocket.on('client_status_changed', (data) => {
-      console.log('📊 클라이언트 상태 변경:', data);
-      setClients(prev => prev.map(client => 
-        client.name === data.name 
-          ? { ...client, status: data.status }
-          : client
-      ));
+      try {
+        console.log('📊 클라이언트 상태 변경:', data);
+        setClients(prev => prev.map(client => 
+          client.name === data.name 
+            ? { ...client, status: data.status }
+            : client
+        ));
+      } catch (error) {
+        console.warn('클라이언트 상태 변경 처리 중 오류:', error);
+      }
     });
 
     // 새 클라이언트 추가 이벤트 처리
     newSocket.on('client_added', (newClient) => {
-      console.log('➕ 새 클라이언트 추가:', newClient);
-      setClients(prev => [...prev, newClient]);
-      showToast(`🖥️ 새 클라이언트 "${newClient.name}"이(가) 연결되었습니다.`, 'success');
+      try {
+        console.log('➕ 새 클라이언트 추가:', newClient);
+        setClients(prev => [...prev, newClient]);
+        showToast(`🖥️ 새 클라이언트 "${newClient.name}"이(가) 연결되었습니다.`, 'success');
+      } catch (error) {
+        console.warn('클라이언트 추가 처리 중 오류:', error);
+      }
     });
 
     // 클라이언트 업데이트 이벤트 처리
     newSocket.on('client_updated', (updatedClient) => {
-      console.log('✏️ 클라이언트 업데이트:', updatedClient);
-      setClients(prev => prev.map(client => 
-        client.id === updatedClient.id 
-          ? updatedClient
-          : client
-      ));
+      try {
+        console.log('✏️ 클라이언트 업데이트:', updatedClient);
+        setClients(prev => prev.map(client => 
+          client.id === updatedClient.id 
+            ? updatedClient
+            : client
+        ));
+      } catch (error) {
+        console.warn('클라이언트 업데이트 처리 중 오류:', error);
+      }
     });
 
     // 클라이언트 삭제 이벤트 처리
     newSocket.on('client_deleted', (data) => {
-      console.log('🗑️ 클라이언트 삭제:', data);
-      setClients(prev => prev.filter(client => client.id !== data.id));
-      showToast('🗑️ 클라이언트가 삭제되었습니다.', 'info');
+      try {
+        console.log('🗑️ 클라이언트 삭제:', data);
+        setClients(prev => prev.filter(client => client.id !== data.id));
+        showToast('🗑️ 클라이언트가 삭제되었습니다.', 'info');
+      } catch (error) {
+        console.warn('클라이언트 삭제 처리 중 오류:', error);
+      }
     });
 
     // 그룹 추가 이벤트 처리
     newSocket.on('group_added', (newGroup) => {
-      console.log('➕ 새 그룹 추가:', newGroup);
-      setGroups(prev => [newGroup, ...prev]);
-      showToast(`✨ 새 그룹 "${newGroup.name}"이(가) 추가되었습니다.`, 'success');
+      try {
+        console.log('➕ 새 그룹 추가:', newGroup);
+        setGroups(prev => [newGroup, ...prev]);
+        showToast(`✨ 새 그룹 "${newGroup.name}"이(가) 추가되었습니다.`, 'success');
+      } catch (error) {
+        console.warn('그룹 추가 처리 중 오류:', error);
+      }
     });
 
     // 그룹 업데이트 이벤트 처리
     newSocket.on('group_updated', (updatedGroup) => {
-      console.log('✏️ 그룹 업데이트:', updatedGroup);
-      setGroups(prev => prev.map(group => 
-        group.id === updatedGroup.id 
-          ? updatedGroup 
-          : group
-      ));
-      showToast(`🔄 그룹 "${updatedGroup.name}" 정보가 업데이트되었습니다.`, 'info');
+      try {
+        console.log('✏️ 그룹 업데이트:', updatedGroup);
+        setGroups(prev => prev.map(group => 
+          group.id === updatedGroup.id 
+            ? updatedGroup 
+            : group
+        ));
+        showToast(`🔄 그룹 "${updatedGroup.name}" 정보가 업데이트되었습니다.`, 'info');
+      } catch (error) {
+        console.warn('그룹 업데이트 처리 중 오류:', error);
+      }
     });
 
     // 그룹 삭제 이벤트 처리
     newSocket.on('group_deleted', (data) => {
-      console.log('🗑️ 그룹 삭제:', data);
-      setGroups(prev => prev.filter(group => group.id !== data.id));
-      showToast('🗑️ 그룹이 삭제되었습니다.', 'info');
+      try {
+        console.log('🗑️ 그룹 삭제:', data);
+        setGroups(prev => prev.filter(group => group.id !== data.id));
+        showToast('🗑️ 그룹이 삭제되었습니다.', 'info');
+      } catch (error) {
+        console.warn('그룹 삭제 처리 중 오류:', error);
+      }
     });
 
     // 프리셋 추가 이벤트 처리
     newSocket.on('preset_added', (newPreset) => {
-      console.log('⚡️ 새 프리셋 추가:', newPreset);
-      setPresets(prev => [newPreset, ...prev]);
-      showToast(`✨ 새 프리셋 "${newPreset.name}"이(가) 추가되었습니다.`, 'success');
+      try {
+        console.log('⚡️ 새 프리셋 추가:', newPreset);
+        setPresets(prev => [newPreset, ...prev]);
+        showToast(`✨ 새 프리셋 "${newPreset.name}"이(가) 추가되었습니다.`, 'success');
+      } catch (error) {
+        console.warn('프리셋 추가 처리 중 오류:', error);
+      }
     });
 
     // 프리셋 업데이트 이벤트 처리
     newSocket.on('preset_updated', (updatedPreset) => {
-      console.log('✏️ 프리셋 업데이트:', updatedPreset);
-      setPresets(prev => prev.map(preset =>
-        preset.id === updatedPreset.id
-          ? updatedPreset
-          : preset
-      ));
-      showToast(`🔄 프리셋 "${updatedPreset.name}" 정보가 업데이트되었습니다.`, 'info');
+      try {
+        console.log('✏️ 프리셋 업데이트:', updatedPreset);
+        setPresets(prev => prev.map(preset =>
+          preset.id === updatedPreset.id
+            ? updatedPreset
+            : preset
+        ));
+        showToast(`🔄 프리셋 "${updatedPreset.name}" 정보가 업데이트되었습니다.`, 'info');
+      } catch (error) {
+        console.warn('프리셋 업데이트 처리 중 오류:', error);
+      }
     });
 
     // 프리셋 삭제 이벤트 처리
     newSocket.on('preset_deleted', (data) => {
-      console.log('🗑️ 프리셋 삭제:', data);
-      setPresets(prev => prev.filter(preset => preset.id !== data.id));
-      showToast('🗑️ 프리셋이 삭제되었습니다.', 'info');
+      try {
+        console.log('🗑️ 프리셋 삭제:', data);
+        setPresets(prev => prev.filter(preset => preset.id !== data.id));
+        showToast('🗑️ 프리셋이 삭제되었습니다.', 'info');
+      } catch (error) {
+        console.warn('프리셋 삭제 처리 중 오류:', error);
+      }
     });
 
     return () => newSocket.close();

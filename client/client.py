@@ -45,6 +45,7 @@ class SwitchboardClient:
         self.sio.on('execute_command', self.on_execute_command)
         self.sio.on('connection_check', self.on_connection_check)
         self.sio.on('registration_failed', self.on_registration_failed)
+        self.sio.on('stop_command', self.on_stop_command)
         
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
     
@@ -108,9 +109,23 @@ class SwitchboardClient:
                 logging.info(f"서버 등록 성공: ID {self.client_id}")
                 return True
             elif response.status_code == 500 and "UNIQUE constraint failed" in response.text:
-                # 중복 이름은 괜찮음. 서버에서 이미 알고 있다는 뜻.
-                # 소켓 연결 시 정보가 업데이트될 것이므로 성공으로 처리.
-                logging.info(f"이미 등록된 클라이언트입니다: {self.client_name}. 연결을 계속합니다.")
+                # 중복 이름인 경우, 기존 클라이언트 정보를 조회하여 ID를 가져옴
+                logging.info(f"이미 등록된 클라이언트입니다: {self.client_name}. 기존 정보를 조회합니다.")
+                try:
+                    # 기존 클라이언트 정보 조회
+                    get_response = requests.get(f"{self.server_url}/api/clients", timeout=10)
+                    if get_response.status_code == 200:
+                        clients = get_response.json()
+                        for client in clients:
+                            if client['name'] == self.client_name:
+                                self.client_id = client['id']
+                                logging.info(f"기존 클라이언트 ID 조회 성공: {self.client_id}")
+                                return True
+                except Exception as e:
+                    logging.error(f"기존 클라이언트 정보 조회 실패: {e}")
+                
+                # 조회 실패해도 연결은 계속 진행
+                logging.info(f"기존 클라이언트 정보 조회 실패했지만 연결을 계속합니다.")
                 return True
             else:
                 logging.error(f"서버 등록 실패: {response.status_code} - {response.text}")
@@ -226,30 +241,54 @@ class SwitchboardClient:
                 print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
                 logging.info(f"클라이언트 ID 불일치로 명령 무시: {target_client_id} != {self.client_id}")
                 return
+            
             if target_client_name and target_client_name != self.client_name:
                 print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
                 logging.info(f"클라이언트 이름 불일치로 명령 무시: {target_client_name} != {self.client_name}")
                 return
             
-            print(f"✅ 명령어 대상 확인 완료 - 실행 시작")
-            logging.info(f"명령 실행 요청: {command}")
-            print(f"⚡ 명령 실행: {command}")
+            print(f"✅ 명령어 실행 대상 확인됨: {self.client_name}")
             
-            result = self.execute_command(command)
+            # 별도 스레드에서 명령 실행
+            def execute_command_async():
+                try:
+                    print(f"🚀 명령어 실행 시작: {command}")
+                    result = self.execute_command(command)
+                    print(f"✅ 명령어 실행 완료: {result}")
+                    
+                    # 실행 결과를 서버에 전송
+                    self.sio.emit('execution_result', {
+                        'executionId': data.get('executionId'),
+                        'clientId': self.client_id,
+                        'clientName': self.client_name,
+                        'command': command,
+                        'result': result,
+                        'presetId': preset_id,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                except Exception as e:
+                    error_msg = f"명령 실행 중 오류: {e}"
+                    logging.error(error_msg)
+                    print(f"❌ {error_msg}")
+                    
+                    self.sio.emit('execution_result', {
+                        'executionId': data.get('executionId'),
+                        'clientId': self.client_id,
+                        'clientName': self.client_name,
+                        'command': command,
+                        'result': {'error': error_msg},
+                        'presetId': preset_id,
+                        'timestamp': datetime.now().isoformat()
+                    })
             
-            print(f"📤 실행 결과 전송: {result}")
-            self.sio.emit('execution_result', {
-                'executionId': data.get('executionId'),
-                'clientId': self.client_id,
-                'clientName': self.client_name,
-                'command': command,
-                'result': result,
-                'presetId': preset_id,
-                'timestamp': datetime.now().isoformat()
-            })
+            # 별도 스레드에서 명령 실행
+            execution_thread = threading.Thread(target=execute_command_async, daemon=True)
+            execution_thread.start()
+            print(f"🔄 명령 실행을 별도 스레드에서 시작: {command}")
             
         except Exception as e:
-            error_msg = f"명령 실행 중 오류: {e}"
+            error_msg = f"명령 실행 요청 처리 중 오류: {e}"
             logging.error(error_msg)
             print(f"❌ {error_msg}")
             
@@ -282,6 +321,88 @@ class SwitchboardClient:
         except Exception as e:
             print(f"❌ 연결 확인 응답 실패: {e}")
             logging.error(f"연결 확인 응답 실패: {e}")
+    
+    def on_stop_command(self, data):
+        """서버로부터 정지 요청을 받습니다."""
+        try:
+            target_client_id = data.get('clientId')
+            target_client_name = data.get('clientName')
+            preset_id = data.get('presetId')
+            
+            print(f"🛑 정지 요청 수신: {data}")
+            logging.info(f"정지 요청 수신: {data}")
+            
+            # 클라이언트 ID나 이름으로 대상 확인
+            if target_client_id and target_client_id != self.client_id:
+                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
+                return
+            
+            if target_client_name and target_client_name != self.client_name:
+                print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
+                return
+            
+            print(f"✅ 정지 요청 대상 확인됨: {self.client_name}")
+            
+            # 실행 중인 프로세스 정지
+            self.stop_running_processes()
+            
+            # 정지 결과를 서버에 전송
+            self.sio.emit('stop_result', {
+                'clientId': self.client_id,
+                'clientName': self.client_name,
+                'presetId': preset_id,
+                'result': {'success': True, 'message': '프로세스 정지 완료'},
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            print(f"✅ 정지 요청 처리 완료: {self.client_name}")
+            
+        except Exception as e:
+            error_msg = f"정지 요청 처리 중 오류: {e}"
+            logging.error(error_msg)
+            print(f"❌ {error_msg}")
+            
+            self.sio.emit('stop_result', {
+                'clientId': self.client_id,
+                'clientName': self.client_name,
+                'presetId': data.get('presetId'),
+                'result': {'error': error_msg},
+                'timestamp': datetime.now().isoformat()
+            })
+    
+    def stop_running_processes(self):
+        """실행 중인 프로세스들을 정지합니다."""
+        try:
+            print("🛑 실행 중인 프로세스 정지 시작")
+            
+            # Windows에서 실행 중인 Unreal Engine 프로세스 찾기 및 정지
+            import psutil
+            
+            # Unreal Engine 관련 프로세스 이름들
+            target_processes = [
+                'MyProject.exe',
+                'UnrealEditor.exe',
+                'UE4Editor.exe',
+                'UE5Editor.exe'
+            ]
+            
+            stopped_count = 0
+            
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['name'] in target_processes:
+                        print(f"🛑 프로세스 정지: {proc.info['name']} (PID: {proc.info['pid']})")
+                        proc.terminate()
+                        stopped_count += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            print(f"✅ 프로세스 정지 완료: {stopped_count}개 프로세스")
+            return stopped_count
+            
+        except Exception as e:
+            print(f"❌ 프로세스 정지 중 오류: {e}")
+            return 0
     
     def execute_command(self, command):
         """명령을 실행합니다."""

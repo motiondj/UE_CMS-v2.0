@@ -751,6 +751,93 @@ app.post('/api/presets/:id/execute', (req, res) => {
   });
 });
 
+// 프리셋 정지 API
+app.post('/api/presets/:id/stop', (req, res) => {
+  const { id } = req.params;
+  console.log(`🛑 프리셋 정지 요청: ID ${id}`);
+  
+  // 프리셋 정보 조회
+  db.get('SELECT * FROM presets WHERE id = ?', [id], (err, preset) => {
+    if (err) {
+      console.error(`❌ 프리셋 조회 실패: ${err.message}`);
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    if (!preset) {
+      console.error(`❌ 프리셋을 찾을 수 없음: ID ${id}`);
+      res.status(404).json({ error: '프리셋을 찾을 수 없습니다.' });
+      return;
+    }
+    
+    console.log(`📋 프리셋 정지: ${preset.name}, 그룹 ID: ${preset.target_group_id}`);
+    
+    // 타겟 그룹의 클라이언트들 조회
+    let query = 'SELECT c.* FROM clients c';
+    let params = [];
+    
+    if (preset.target_group_id) {
+      query += ' JOIN group_clients gc ON c.id = gc.client_id WHERE gc.group_id = ?';
+      params.push(preset.target_group_id);
+    }
+    
+    db.all(query, params, (err, clients) => {
+      if (err) {
+        console.error(`❌ 클라이언트 조회 실패: ${err.message}`);
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      
+      console.log(`👥 정지 대상 클라이언트: ${clients.length}개`);
+      
+      // 각 클라이언트에 정지 명령 전송
+      const stopResults = [];
+      
+      clients.forEach(client => {
+        // Socket.io를 통해 클라이언트에 정지 명령 전송
+        const clientSocket = connectedClients.get(client.name);
+        
+        if (clientSocket && clientSocket.connected) {
+          clientSocket.emit('stop_command', {
+            clientId: client.id,
+            clientName: client.name,
+            presetId: preset.id
+          });
+          console.log(`📤 클라이언트 ${client.name}에 정지 명령 전송`);
+          stopResults.push({
+            clientId: client.id,
+            clientName: client.name,
+            status: 'stopping'
+          });
+        } else {
+          console.log(`⚠️ 오프라인 클라이언트 ${client.name} - 정지 명령 전송 건너뜀`);
+        }
+      });
+      
+      // 응답 데이터 구성
+      const responseData = {
+        message: '프리셋 정지 요청이 전송되었습니다.',
+        preset: preset,
+        clients: stopResults,
+        summary: {
+          total: clients.length,
+          stopped: stopResults.length
+        }
+      };
+      
+      console.log(`✅ 프리셋 정지 요청 완료: ${stopResults.length}개 클라이언트에 정지 명령 전송`);
+      
+      io.emit('preset_stopped', {
+        presetId: preset.id,
+        presetName: preset.name,
+        clients: stopResults
+      });
+      
+      res.json(responseData);
+    });
+  });
+});
+
 // 실행 히스토리 API
 app.get('/api/execution-history', (req, res) => {
   db.all(`
@@ -816,7 +903,7 @@ io.on('connection', (socket) => {
         }
 
         // 오프라인 상태이거나 소켓이 없는 경우 정보 업데이트
-        console.log(`🔄 같은 이름의 오프라인 클라이언트 발견: ${existingClient.name} (IP: ${existingClient.ip_address} → ${clientIP})`);
+        console.log(`�� 같은 이름의 오프라인 클라이언트 발견: ${existingClient.name} (IP: ${existingClient.ip_address} → ${clientIP})`);
         
         // 기존 소켓이 있지만 연결이 끊어진 경우에만 제거
         if (existingClient.name && connectedClients.has(existingClient.name)) {

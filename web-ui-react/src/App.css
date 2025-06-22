@@ -1063,8 +1063,33 @@ textarea.form-input {
 }
 
 .preset-card.active {
-    border-color: #22c55e;
-    background: var(--success-bg);
+    border-color: #3b82f6;
+    background-color: var(--info-bg);
+}
+
+.preset-card.running {
+    border-color: #ef4444;
+    background-color: var(--error-bg);
+    animation: pulse-running 2s infinite;
+}
+
+@keyframes pulse-running {
+    0% { box-shadow: 0 1px 3px var(--shadow-color); }
+    50% { box-shadow: 0 1px 3px var(--shadow-color), 0 0 0 3px rgba(239, 68, 68, 0.2); }
+    100% { box-shadow: 0 1px 3px var(--shadow-color); }
+}
+
+.running-indicator {
+    color: #ef4444;
+    font-weight: 600;
+    font-size: 12px;
+    margin-left: 8px;
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0.5; }
 }
 
 .preset-checkbox {

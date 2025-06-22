@@ -4,6 +4,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedPresets, setSelectedPresets] = useState(new Set());
+  const [runningPresets, setRunningPresets] = useState(new Set()); // 실행 중인 프리셋 추적
   
   const [formData, setFormData] = useState({
     name: '',
@@ -131,6 +132,9 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
   
   const runPreset = async (preset) => {
     try {
+      // 실행 중 상태로 설정
+      setRunningPresets(prev => new Set([...prev, preset.id]));
+      
       const response = await fetch(`${apiBase}/api/presets/${preset.id}/execute`, {
         method: 'POST',
         headers: {
@@ -166,6 +170,39 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
       }
     } catch (error) {
       showToast(`프리셋 실행 실패: ${error.message}`, 'error');
+      // 실행 실패 시 실행 중 상태 제거
+      setRunningPresets(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(preset.id);
+        return newSet;
+      });
+    }
+  };
+
+  const stopPreset = async (preset) => {
+    try {
+      const response = await fetch(`${apiBase}/api/presets/${preset.id}/stop`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || '프리셋 정지 실패');
+      }
+      
+      // 실행 중 상태 제거
+      setRunningPresets(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(preset.id);
+        return newSet;
+      });
+      
+      showToast(`프리셋 "${preset.name}" 정지 요청이 전송되었습니다.`, 'info');
+    } catch (error) {
+      showToast(`프리셋 정지 실패: ${error.message}`, 'error');
     }
   };
 
@@ -245,8 +282,10 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
               presets.map(preset => {
                   const group = safeGroups.find(g => g.id === preset.target_group_id);
                   const clientCount = group ? (group.clients || []).length : 0;
+                  const isRunning = runningPresets.has(preset.id);
+                  
                   return (
-                      <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${preset.is_active ? 'active' : ''}`}>
+                      <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${isRunning ? 'running' : ''}`}>
                           <input 
                               type="checkbox" 
                               className="preset-checkbox" 
@@ -256,13 +295,32 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                               onClick={(e) => e.stopPropagation()}
                           />
                           <div className="preset-content">
-                              <div className="preset-name">{preset.name}</div>
+                              <div className="preset-name">
+                                  {preset.name}
+                                  {isRunning && <span className="running-indicator"> 🔴 실행중</span>}
+                              </div>
                               {preset.description && <div className="preset-info">{preset.description}</div>}
                               <div className="preset-info">그룹: {group ? group.name : '삭제된 그룹'}</div>
                               <div className="preset-info">{clientCount}대 클라이언트</div>
                           </div>
                           <div className="preset-actions">
-                              <button className="btn btn-primary btn-bulk" onClick={() => runPreset(preset)} title="실행">실행</button>
+                              {isRunning ? (
+                                  <button 
+                                      className="btn btn-danger btn-bulk" 
+                                      onClick={() => stopPreset(preset)} 
+                                      title="정지"
+                                  >
+                                      정지
+                                  </button>
+                              ) : (
+                                  <button 
+                                      className="btn btn-primary btn-bulk" 
+                                      onClick={() => runPreset(preset)} 
+                                      title="실행"
+                                  >
+                                      실행
+                                  </button>
+                              )}
                               <button className="btn btn-secondary btn-bulk" onClick={() => openEditModal(preset)} title="편집">편집</button>
                               <button className="btn btn-danger btn-bulk" onClick={() => deletePreset(preset.id)} title="삭제">삭제</button>
                           </div>
