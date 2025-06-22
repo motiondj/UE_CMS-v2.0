@@ -29,7 +29,7 @@
     border-left: 4px solid #22c55e;
 }
 .client-item-card.online {
-    border-left: 4px solid #f59e0b;
+    border-left: 4px solid #2563eb;
 }
 .client-item-card.offline {
     border-left: 4px solid #ef4444;
@@ -171,7 +171,7 @@
 }
 
 .client-item.online .client-status-indicator {
-  background-color: #f59e0b;
+  background-color: #2563eb;
 }
 
 .client-item.running .client-status-indicator {

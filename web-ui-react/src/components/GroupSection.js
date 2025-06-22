@@ -39,7 +39,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
     setSelectedClients(newSelected);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
     if (selectedClients.size === 0) {
@@ -48,20 +48,39 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
     }
 
     const groupData = {
-      ...formData,
+      name: formData.name,
       client_ids: Array.from(selectedClients)
     };
 
-    if (editingGroup) {
-      // 편집 모드
-      showToast(`그룹 "${formData.name}"이(가) 수정되었습니다.`, 'success');
-    } else {
-      // 새 그룹 생성
-      showToast(`새 그룹 "${formData.name}"이(가) 생성되었습니다.`, 'success');
-    }
+    const isEditing = !!editingGroup;
+    const url = isEditing ? `/api/groups/${editingGroup.id}` : '/api/groups';
+    const method = isEditing ? 'PUT' : 'POST';
 
-    setShowAddModal(false);
-    resetForm();
+    try {
+      const response = await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(groupData)
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || `그룹 ${isEditing ? '수정' : '생성'}에 실패했습니다.`);
+      }
+
+      const result = await response.json();
+      
+      showToast(
+        isEditing 
+          ? `그룹 "${result.name}"이(가) 성공적으로 수정되었습니다.`
+          : `새 그룹 "${result.name}"이(가) 생성되었습니다.`, 
+        'success'
+      );
+      
+      closeModal();
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
   };
 
   const resetForm = () => {
@@ -70,22 +89,45 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
     setEditingGroup(null);
   };
 
-  const openEditModal = (group) => {
-    setEditingGroup(group);
-    setFormData({
-      name: group.name,
-      description: group.description || ''
-    });
-    setSelectedClients(new Set(group.client_ids));
+  const openAddModal = () => {
+    resetForm();
     setShowAddModal(true);
   };
 
-  const deleteGroup = (groupId) => {
+  const closeModal = () => {
+    setShowAddModal(false);
+    resetForm();
+  };
+
+  const openEditModal = (group) => {
+    setEditingGroup(group);
+    setFormData({ name: group.name, description: group.description || '' });
+    const clientIds = new Set((group.clients || []).map(c => c.id));
+    setSelectedClients(clientIds);
+    setShowAddModal(true);
+  };
+
+  const deleteGroup = async (groupId) => {
     const group = groups.find(g => g.id === groupId);
     if (!group) return;
 
     if (window.confirm(`정말 "${group.name}" 그룹을 삭제하시겠습니까?\n그룹만 삭제되고 클라이언트는 유지됩니다.`)) {
-      showToast(`그룹 "${group.name}"이(가) 삭제되었습니다.`, 'error');
+      try {
+        const response = await fetch(`/api/groups/${groupId}`, {
+          method: 'DELETE',
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || '그룹 삭제에 실패했습니다.');
+        }
+        
+        // UI 업데이트는 App.js의 소켓 이벤트를 통해 처리되므로 별도 호출 필요 없음
+        showToast(`그룹 "${group.name}"이(가) 성공적으로 삭제되었습니다.`, 'success');
+
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
     }
   };
 
@@ -123,7 +165,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
         👥 디스플레이 서버 그룹
         <button 
           className="btn btn-secondary btn-with-text" 
-          onClick={() => setShowAddModal(true)}
+          onClick={openAddModal}
         >
           ➕ 새 그룹
         </button>
@@ -176,14 +218,13 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
           </div>
         ) : (
           groups.map(group => {
-            const clientTags = group.client_ids.map(clientId => {
-              const client = clients.find(c => c.id === clientId);
-              return client ? (
-                <span key={clientId} className="client-tag">
-                  {client.ip_address}
+            const clientTags = (group.clients || []).map(client => {
+              return (
+                <span key={client.id} className="client-tag">
+                  {client.name} ({client.ip_address})
                 </span>
-              ) : null;
-            }).filter(Boolean);
+              );
+            });
 
             return (
               <div key={group.id} className="group-card">
@@ -196,7 +237,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
                 />
                 <div className="group-content">
                   <div className="group-name">{group.name}</div>
-                  <div className="group-info">{group.client_ids.length}개 디스플레이 서버</div>
+                  <div className="group-info">{(group.clients || []).length}개 디스플레이 서버</div>
                   <div className="group-clients">
                     {clientTags}
                   </div>
@@ -229,7 +270,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
           <div className="modal-content">
             <div className="modal-header">
               <h3>{editingGroup ? '👥 그룹 편집' : '👥 새 그룹 만들기'}</h3>
-              <span className="close" onClick={() => setShowAddModal(false)}>&times;</span>
+              <span className="close" onClick={closeModal}>&times;</span>
             </div>
             
             <form onSubmit={handleSubmit}>
@@ -288,7 +329,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
               </div>
               
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowAddModal(false)}>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>
                   취소
                 </button>
                 <button type="submit" className="btn btn-primary">

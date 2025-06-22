@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import './ClientMonitor.css';
 
-const ClientMonitor = ({ clients, showToast }) => {
+const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editFormData, setEditFormData] = useState({});
@@ -37,13 +38,17 @@ const ClientMonitor = ({ clients, showToast }) => {
 
   const showClientDetail = (client) => {
     setSelectedClient(client);
+    setShowDetailModal(true);
+  };
+
+  const openEditModal = (client) => {
+    setSelectedClient(client);
     setEditFormData({
       name: client.name,
       ip_address: client.ip_address,
       port: client.port,
     });
-    setIsEditing(false);
-    setShowDetailModal(true);
+    setShowEditModal(true);
   };
 
   const handleUpdateClient = async (e) => {
@@ -60,8 +65,9 @@ const ClientMonitor = ({ clients, showToast }) => {
 
       if (response.ok) {
         showToast(`클라이언트 "${updatedClient.name}" 정보가 수정되었습니다.`, 'success');
-        setIsEditing(false);
+        setShowEditModal(false);
         setSelectedClient(updatedClient);
+        onClientUpdate(updatedClient);
       } else {
         throw new Error(updatedClient.error || '클라이언트 정보 수정에 실패했습니다.');
       }
@@ -78,13 +84,14 @@ const ClientMonitor = ({ clients, showToast }) => {
         const response = await fetch(`/api/clients/${selectedClient.id}`, {
           method: 'DELETE',
         });
-        const data = await response.json();
-
+        
         if (response.ok) {
           showToast(`클라이언트 "${selectedClient.name}"이(가) 삭제되었습니다.`, 'success');
           setShowDetailModal(false);
           setSelectedClient(null);
+          // 삭제 이벤트는 App.js의 socket listener가 처리
         } else {
+          const data = await response.json();
           throw new Error(data.error || '클라이언트 삭제에 실패했습니다.');
         }
       } catch (error) {
@@ -109,7 +116,7 @@ const ClientMonitor = ({ clients, showToast }) => {
         color = '#22c55e'; // green
         break;
       case 'online':
-        color = '#f59e0b'; // amber
+        color = '#2563eb'; // blue
         break;
       case 'offline':
       default:
@@ -293,35 +300,18 @@ const ClientMonitor = ({ clients, showToast }) => {
                   {/* 시스템 정보 */}
                   <div className="info-section">
                     <h4>📋 시스템 정보</h4>
-                    {isEditing ? (
-                      <form onSubmit={handleUpdateClient} id="edit-client-form">
-                        <div className="info-grid">
-                          <div>🏷️ 이름: <input type="text" className="form-input" name="name" value={editFormData.name} onChange={(e) => setEditFormData(p => ({...p, name: e.target.value}))} required /></div>
-                          <div>🌐 IP 주소: <input type="text" className="form-input" name="ip_address" value={editFormData.ip_address} onChange={(e) => setEditFormData(p => ({...p, ip_address: e.target.value}))} required pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$" /></div>
-                          <div>🔌 포트: <input type="number" className="form-input" name="port" value={editFormData.port} onChange={(e) => setEditFormData(p => ({...p, port: parseInt(e.target.value, 10)}))} required /></div>
-                          <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
-                            {selectedClient.status}
-                          </span></div>
-                          <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
-                          <div>🆔 현재 실행 ID: <span>
-                            {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
-                          </span></div>
-                        </div>
-                      </form>
-                    ) : (
-                      <div className="info-grid">
-                        <div>🏷️ 이름: <strong>{selectedClient.name}</strong></div>
-                        <div>🌐 IP 주소: <strong>{selectedClient.ip_address}</strong></div>
-                        <div>🔌 포트: <strong>{selectedClient.port}</strong></div>
-                        <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
-                          {selectedClient.status}
-                        </span></div>
-                        <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
-                        <div>🆔 현재 실행 ID: <span>
-                          {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
-                        </span></div>
-                      </div>
-                    )}
+                    <div className="info-grid">
+                      <div>🏷️ 이름: <strong>{selectedClient.name}</strong></div>
+                      <div>🌐 IP 주소: <strong>{selectedClient.ip_address}</strong></div>
+                      <div>🔌 포트: <strong>{selectedClient.port}</strong></div>
+                      <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
+                        {selectedClient.status}
+                      </span></div>
+                      <div>🕒 마지막 연결: <span>{formatRelativeTime(selectedClient.last_seen)}</span></div>
+                      <div>🆔 현재 실행 ID: <span>
+                        {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
+                      </span></div>
+                    </div>
                   </div>
                 </div>
 
@@ -330,26 +320,20 @@ const ClientMonitor = ({ clients, showToast }) => {
                   <div className="danger-section info-section">
                     <h4>⚙️ 설정</h4>
                     <div className="button-group vertical">
-                      {!isEditing && (
-                        <button
-                          className="btn btn-secondary"
-                          onClick={() => setIsEditing(true)}
-                        >
-                          수정
-                        </button>
-                      )}
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => openEditModal(selectedClient)}
+                      >
+                        수정
+                      </button>
                       <button 
                         className="btn btn-danger" 
                         onClick={deleteClient}
                         title="데이터베이스에서 완전 삭제"
-                        disabled={isEditing}
                       >
                         삭제
                       </button>
                     </div>
-                    {isEditing &&
-                      <p className="warning-text">수정 모드에서는 삭제할 수 없습니다.</p>
-                    }
                   </div>
                 </div>
 
@@ -402,23 +386,70 @@ const ClientMonitor = ({ clients, showToast }) => {
                 </div>
               )}
             </div>
-            {isEditing && (
+          </div>
+        </div>
+      )}
+
+      {/* 클라이언트 수정 모달 */}
+      {showEditModal && selectedClient && (
+        <div className="modal show">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>✏️ {selectedClient.name} 정보 수정</h3>
+              <span className="close" onClick={() => setShowEditModal(false)}>&times;</span>
+            </div>
+            
+            <form onSubmit={handleUpdateClient}>
+              <div className="form-group">
+                <label htmlFor="editClientName">🏷️ 클라이언트 이름</label>
+                <input 
+                  type="text" 
+                  id="editClientName"
+                  className="form-input" 
+                  placeholder="예: Display_01" 
+                  value={editFormData.name}
+                  onChange={(e) => setEditFormData(prev => ({ ...prev, name: e.target.value }))}
+                  required
+                />
+              </div>
+              
+              <div className="form-group">
+                <label htmlFor="editClientIP">🌐 IP 주소</label>
+                <input 
+                  type="text" 
+                  id="editClientIP"
+                  className="form-input" 
+                  placeholder="192.168.1.101" 
+                  pattern="^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"
+                  value={editFormData.ip_address}
+                  onChange={(e) => setEditFormData(prev => ({ ...prev, ip_address: e.target.value }))}
+                  required
+                />
+              </div>
+              
+              <div className="form-group">
+                <label htmlFor="editClientPort">🔌 포트</label>
+                <input 
+                  type="number" 
+                  id="editClientPort"
+                  className="form-input" 
+                  placeholder="8081" 
+                  value={editFormData.port}
+                  onChange={(e) => setEditFormData(prev => ({ ...prev, port: parseInt(e.target.value) || 8081 }))}
+                  min="1" 
+                  max="65535"
+                />
+              </div>
+              
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={() => {
-                  setIsEditing(false);
-                  setEditFormData({
-                    name: selectedClient.name,
-                    ip_address: selectedClient.ip_address,
-                    port: selectedClient.port,
-                  });
-                }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>
                   취소
                 </button>
-                <button type="submit" form="edit-client-form" className="btn btn-primary">
+                <button type="submit" className="btn btn-primary">
                   저장
                 </button>
               </div>
-            )}
+            </form>
           </div>
         </div>
       )}

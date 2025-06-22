@@ -38,14 +38,28 @@ function App() {
 
     newSocket.on('connect', () => {
       setIsSocketConnected(true);
-      newSocket.emit('register', { clientType: 'web-ui' });
+      // 웹UI는 클라이언트로 등록하지 않음 (관리 인터페이스이므로)
+      // newSocket.emit('register_client', { 
+      //   name: 'web-ui',
+      //   clientType: 'web-ui' 
+      // });
       showToast('🔌 Socket 연결이 성공했습니다.', 'success');
+      
+      // 웹UI는 하트비트를 보내지 않음 (클라이언트가 아니므로)
+      // startHeartbeat(newSocket);
     });
 
     newSocket.on('disconnect', () => {
       setIsSocketConnected(false);
       showToast('🔌 Socket 연결이 끊어졌습니다.', 'error');
     });
+
+    // 웹UI는 클라이언트가 아니므로 연결 확인 응답하지 않음
+    // newSocket.on('connection_check', (data) => {
+    //   newSocket.emit('connection_check_response', {
+    //     clientName: 'web-ui'
+    //   });
+    // });
 
     newSocket.on('client_update', (data) => {
       setClients(prev => prev.map(client => 
@@ -63,8 +77,115 @@ function App() {
       ));
     });
 
+    // 클라이언트 오프라인 상태 업데이트 처리
+    newSocket.on('clients_offline_updated', () => {
+      console.log('🔄 클라이언트 오프라인 상태 업데이트 감지');
+      loadData(); // 클라이언트 목록 새로고침
+      showToast('🔄 클라이언트 상태가 업데이트되었습니다.', 'info');
+    });
+
+    // 클라이언트 상태 변경 이벤트 처리
+    newSocket.on('client_status_changed', (data) => {
+      console.log('📊 클라이언트 상태 변경:', data);
+      setClients(prev => prev.map(client => 
+        client.name === data.name 
+          ? { ...client, status: data.status }
+          : client
+      ));
+    });
+
+    // 새 클라이언트 추가 이벤트 처리
+    newSocket.on('client_added', (newClient) => {
+      console.log('➕ 새 클라이언트 추가:', newClient);
+      setClients(prev => [...prev, newClient]);
+      showToast(`🖥️ 새 클라이언트 "${newClient.name}"이(가) 연결되었습니다.`, 'success');
+    });
+
+    // 클라이언트 업데이트 이벤트 처리
+    newSocket.on('client_updated', (updatedClient) => {
+      console.log('✏️ 클라이언트 업데이트:', updatedClient);
+      setClients(prev => prev.map(client => 
+        client.id === updatedClient.id 
+          ? updatedClient
+          : client
+      ));
+    });
+
+    // 클라이언트 삭제 이벤트 처리
+    newSocket.on('client_deleted', (data) => {
+      console.log('🗑️ 클라이언트 삭제:', data);
+      setClients(prev => prev.filter(client => client.id !== data.id));
+      showToast('🗑️ 클라이언트가 삭제되었습니다.', 'info');
+    });
+
+    // 그룹 추가 이벤트 처리
+    newSocket.on('group_added', (newGroup) => {
+      console.log('➕ 새 그룹 추가:', newGroup);
+      setGroups(prev => [newGroup, ...prev]);
+      showToast(`✨ 새 그룹 "${newGroup.name}"이(가) 추가되었습니다.`, 'success');
+    });
+
+    // 그룹 업데이트 이벤트 처리
+    newSocket.on('group_updated', (updatedGroup) => {
+      console.log('✏️ 그룹 업데이트:', updatedGroup);
+      setGroups(prev => prev.map(group => 
+        group.id === updatedGroup.id 
+          ? updatedGroup 
+          : group
+      ));
+      showToast(`🔄 그룹 "${updatedGroup.name}" 정보가 업데이트되었습니다.`, 'info');
+    });
+
+    // 그룹 삭제 이벤트 처리
+    newSocket.on('group_deleted', (data) => {
+      console.log('🗑️ 그룹 삭제:', data);
+      setGroups(prev => prev.filter(group => group.id !== data.id));
+      showToast('🗑️ 그룹이 삭제되었습니다.', 'info');
+    });
+
+    // 프리셋 추가 이벤트 처리
+    newSocket.on('preset_added', (newPreset) => {
+      console.log('⚡️ 새 프리셋 추가:', newPreset);
+      setPresets(prev => [newPreset, ...prev]);
+      showToast(`✨ 새 프리셋 "${newPreset.name}"이(가) 추가되었습니다.`, 'success');
+    });
+
+    // 프리셋 업데이트 이벤트 처리
+    newSocket.on('preset_updated', (updatedPreset) => {
+      console.log('✏️ 프리셋 업데이트:', updatedPreset);
+      setPresets(prev => prev.map(preset =>
+        preset.id === updatedPreset.id
+          ? updatedPreset
+          : preset
+      ));
+      showToast(`🔄 프리셋 "${updatedPreset.name}" 정보가 업데이트되었습니다.`, 'info');
+    });
+
+    // 프리셋 삭제 이벤트 처리
+    newSocket.on('preset_deleted', (data) => {
+      console.log('🗑️ 프리셋 삭제:', data);
+      setPresets(prev => prev.filter(preset => preset.id !== data.id));
+      showToast('🗑️ 프리셋이 삭제되었습니다.', 'info');
+    });
+
     return () => newSocket.close();
   }, []);
+
+  // 웹UI는 클라이언트가 아니므로 하트비트를 보내지 않음
+  // const startHeartbeat = (socket) => {
+  //   const heartbeatInterval = setInterval(() => {
+  //     if (socket.connected) {
+  //       socket.emit('heartbeat', {
+  //         name: 'web-ui'
+  //       });
+  //     } else {
+  //       clearInterval(heartbeatInterval);
+  //     }
+  //   }, 30000); // 30초마다 하트비트
+
+  //   // 컴포넌트 언마운트 시 인터벌 정리
+  //   return () => clearInterval(heartbeatInterval);
+  // };
 
   // API 연결 상태 확인
   useEffect(() => {
@@ -161,14 +282,28 @@ function App() {
     showToast('🔄 데이터를 새로고침했습니다.', 'info');
   };
 
-  // 데모 데이터 생성 (개발용)
-  useEffect(() => {
-    if (clients.length === 0 && groups.length === 0 && presets.length === 0) {
-      setTimeout(() => {
-        createDemoData();
-      }, 3000);
+  const handleClientUpdate = (updatedClient) => {
+    if (updatedClient) {
+      // 클라이언트 수정 시
+      setClients(prevClients => 
+        prevClients.map(client => 
+          client.id === updatedClient.id ? updatedClient : client
+        )
+      );
+    } else {
+      // 클라이언트 삭제 시 - 전체 데이터 다시 로드
+      loadData();
     }
-  }, [clients.length, groups.length, presets.length]);
+  };
+
+  // 데모 데이터 생성 (개발용) - 비활성화
+  // useEffect(() => {
+  //   if (clients.length === 0 && groups.length === 0 && presets.length === 0) {
+  //     setTimeout(() => {
+  //       createDemoData();
+  //     }, 3000);
+  //   }
+  // }, [clients.length, groups.length, presets.length]);
 
   const createDemoData = () => {
     // 데모 클라이언트 생성
@@ -214,25 +349,16 @@ function App() {
   };
 
   return (
-    <div className="App">
-      {/* API 연결 상태 표시 */}
-      <div className={`api-status ${isApiConnected ? 'visible' : ''}`}>
-        <span className={`api-indicator ${isApiConnected ? 'connected' : 'disconnected'}`}></span>
-        <span>{isApiConnected ? 'API 연결됨' : 'API 연결 중...'}</span>
-      </div>
-
-      {/* 헤더 */}
+    <div className={`App ${isDarkMode ? 'dark-mode' : ''}`}>
       <Header 
-        isDarkMode={isDarkMode}
-        onToggleDarkMode={toggleDarkMode}
-        onRefresh={handleRefresh}
+        isDarkMode={isDarkMode} 
+        toggleDarkMode={toggleDarkMode}
         isSocketConnected={isSocketConnected}
+        isApiConnected={isApiConnected}
         currentTime={currentTime}
-        connectedCount={onlineClients}
+        onRefresh={handleRefresh}
       />
-
       <div className="container">
-        {/* 통계 바 */}
         <StatsBar 
           totalClients={totalClients}
           onlineClients={onlineClients}
@@ -240,40 +366,29 @@ function App() {
           activeExecutions={activeExecutions}
           totalGroups={totalGroups}
         />
-
-        {/* 메인 레이아웃 */}
         <div className="main-layout">
-          {/* 콘텐츠 프리셋 */}
-          <PresetSection 
-            presets={presets}
-            groups={groups}
-            onRefresh={handleRefresh}
-            showToast={showToast}
-          />
-
-          {/* 디스플레이 서버 그룹 */}
-          <GroupSection 
-            groups={groups}
-            clients={clients}
-            onRefresh={handleRefresh}
-            showToast={showToast}
-          />
+            <PresetSection 
+              presets={presets}
+              groups={groups}
+              clients={clients}
+              apiBase={API_BASE}
+              showToast={showToast}
+            />
+            <GroupSection 
+              groups={groups}
+              clients={clients}
+              apiBase={API_BASE}
+              showToast={showToast}
+            />
         </div>
-
-        {/* 디스플레이 서버 모니터링 */}
         <ClientMonitor 
-          clients={clients}
-          onRefresh={handleRefresh}
-          showToast={showToast}
+            clients={clients} 
+            onClientUpdate={handleClientUpdate}
+            apiBase={API_BASE}
+            showToast={showToast}
         />
       </div>
-
-      {/* 토스트 알림 */}
-      <Toast 
-        message={toast.message}
-        type={toast.type}
-        onClose={() => setToast({ message: '', type: 'info' })}
-      />
+      <Toast message={toast.message} type={toast.type} onClear={() => setToast({ message: '', type: 'info' })} />
     </div>
   );
 }
