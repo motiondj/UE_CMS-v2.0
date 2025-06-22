@@ -332,6 +332,7 @@ body {
 
 .preset-actions {
     display: flex;
+    flex-direction: column;
     gap: 4px;
     flex-shrink: 0;
 }
@@ -395,6 +396,7 @@ body {
 
 .group-actions {
     display: flex;
+    flex-direction: column;
     gap: 4px;
     flex-shrink: 0;
     align-items: center;

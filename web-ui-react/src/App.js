@@ -38,6 +38,7 @@ function App() {
 
     newSocket.on('connect', () => {
       setIsSocketConnected(true);
+      newSocket.emit('register', { clientType: 'web-ui' });
       showToast('🔌 Socket 연결이 성공했습니다.', 'success');
     });
 

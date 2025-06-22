@@ -90,6 +90,7 @@ class SwitchboardClient:
     def on_connect(self):
         """Socket.io 연결 시 호출됩니다."""
         logging.info("서버에 연결되었습니다.")
+        self.sio.emit('register', {'clientType': 'python-client'})
         self.update_status('online')
     
     def on_disconnect(self):

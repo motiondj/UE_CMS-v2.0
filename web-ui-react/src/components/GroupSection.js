@@ -143,26 +143,26 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
           <span>선택된 그룹: <span>{selectedGroups.size}</span>개</span>
         </div>
         <div className="bulk-actions">
-          <button 
-            className="btn btn-primary btn-bulk" 
+          <button
+            className="btn btn-primary btn-bulk"
             onClick={() => bulkAction('on')}
             title="선택된 그룹들 전체 켜기"
           >
-            🔌
+            켜기
           </button>
-          <button 
-            className="btn btn-secondary btn-bulk" 
+          <button
+            className="btn btn-secondary btn-bulk"
             onClick={() => bulkAction('reboot')}
             title="선택된 그룹들 전체 재부팅"
           >
-            🔄
+            재부팅
           </button>
-          <button 
-            className="btn btn-danger btn-bulk" 
+          <button
+            className="btn btn-danger btn-bulk"
             onClick={() => bulkAction('off')}
             title="선택된 그룹들 전체 끄기"
           >
-            ⚡
+            끄기
           </button>
         </div>
       </div>
@@ -202,19 +202,19 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
                   </div>
                 </div>
                 <div className="group-actions">
-                  <button 
-                    className="btn btn-secondary" 
+                  <button
+                    className="btn btn-secondary btn-bulk"
                     onClick={() => openEditModal(group)}
                     title="편집"
                   >
-                    ✏️
+                    편집
                   </button>
-                  <button 
-                    className="btn btn-danger" 
+                  <button
+                    className="btn btn-danger btn-bulk"
                     onClick={() => deleteGroup(group.id)}
                     title="삭제"
                   >
-                    🗑️
+                    삭제
                   </button>
                 </div>
               </div>

@@ -361,7 +361,13 @@ app.get('/api/execution-history', (req, res) => {
 
 // Socket.io 이벤트 처리
 io.on('connection', (socket) => {
-  console.log('클라이언트가 연결되었습니다:', socket.id);
+  console.log('클라이언트 연결 시도:', socket.id);
+
+  socket.on('register', (data) => {
+    const clientType = data.clientType || 'Unknown';
+    socket.clientType = clientType;
+    console.log(`✅ [${clientType}] 클라이언트 등록됨: ${socket.id}`);
+  });
   
   // 클라이언트 상태 업데이트
   socket.on('client_status_update', (data) => {
@@ -394,7 +400,8 @@ io.on('connection', (socket) => {
   });
   
   socket.on('disconnect', () => {
-    console.log('클라이언트가 연결을 해제했습니다:', socket.id);
+    const clientType = socket.clientType || 'Unknown';
+    console.log(`❌ [${clientType}] 클라이언트 연결 해제: ${socket.id}`);
   });
 });
 

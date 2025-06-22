@@ -190,26 +190,26 @@ const PresetSection = ({ presets, groups, onRefresh, showToast }) => {
           <span>선택된 프리셋: <span>{selectedPresets.size}</span>개</span>
         </div>
         <div className="bulk-actions">
-          <button 
-            className="btn btn-primary btn-bulk" 
+          <button
+            className="btn btn-primary btn-bulk"
             onClick={() => bulkAction('execute')}
             title="선택된 프리셋들 전체 실행"
           >
-            ▶️
+            실행
           </button>
-          <button 
-            className="btn btn-danger btn-bulk" 
+          <button
+            className="btn btn-danger btn-bulk"
             onClick={() => bulkAction('stop')}
             title="선택된 프리셋들 전체 정지"
           >
-            ⏹️
+            정지
           </button>
-          <button 
-            className="btn btn-danger btn-bulk" 
+          <button
+            className="btn btn-danger btn-bulk"
             onClick={() => bulkAction('delete')}
             title="선택된 프리셋들 전체 삭제"
           >
-            🗑️
+            삭제
           </button>
         </div>
       </div>
@@ -244,25 +244,25 @@ const PresetSection = ({ presets, groups, onRefresh, showToast }) => {
                 </div>
                 <div className="preset-actions">
                   <button 
-                    className="btn btn-primary" 
+                    className="btn btn-primary btn-bulk" 
                     onClick={() => executePreset(preset.id)}
                     title="실행"
                   >
-                    ▶️
+                    실행
                   </button>
                   <button 
-                    className="btn btn-secondary" 
+                    className="btn btn-secondary btn-bulk" 
                     onClick={() => openEditModal(preset)}
                     title="편집"
                   >
-                    ✏️
+                    편집
                   </button>
                   <button 
-                    className="btn btn-danger" 
+                    className="btn btn-danger btn-bulk" 
                     onClick={() => deletePreset(preset.id)}
                     title="삭제"
                   >
-                    🗑️
+                    삭제
                   </button>
                 </div>
               </div>
