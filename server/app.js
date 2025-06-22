@@ -235,9 +235,6 @@ app.delete('/api/clients/:id', (req, res) => {
         return res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
       }
       
-      // 2. 클라이언트 그룹 설정 백업 (삭제 전에)
-      backupClientGroupSettings(client.name, id);
-      
       // 3. 그룹-클라이언트 연결에서 해당 클라이언트 제거
       db.run('DELETE FROM group_clients WHERE client_id = ?', [id], (err) => {
         if (err) {
@@ -903,7 +900,7 @@ io.on('connection', (socket) => {
         }
 
         // 오프라인 상태이거나 소켓이 없는 경우 정보 업데이트
-        console.log(`�� 같은 이름의 오프라인 클라이언트 발견: ${existingClient.name} (IP: ${existingClient.ip_address} → ${clientIP})`);
+        console.log(`✅ 같은 이름의 오프라인 클라이언트 발견: ${existingClient.name} (IP: ${existingClient.ip_address} → ${clientIP})`);
         
         // 기존 소켓이 있지만 연결이 끊어진 경우에만 제거
         if (existingClient.name && connectedClients.has(existingClient.name)) {
@@ -1015,9 +1012,6 @@ io.on('connection', (socket) => {
               console.log(`✅ 삭제된 클라이언트 자동 재등록 완료: ${name} (ID: ${this.lastID})`);
               console.log(`🔗 소켓 연결 정보: ${name} -> 소켓 ID ${socket.id}`);
               
-              // 클라이언트 복구 시 원래 그룹 설정 복원
-              restoreClientGroupSettings(name, this.lastID);
-              
               io.emit('client_added', newClient);
               io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
               
@@ -1030,58 +1024,6 @@ io.on('connection', (socket) => {
       }
     });
   });
-  
-  // 클라이언트 그룹 설정 복원 함수
-  function restoreClientGroupSettings(clientName, clientId) {
-    console.log(`🔄 클라이언트 ${clientName} 그룹 설정 복원 시작`);
-    
-    // 백업된 그룹 설정 조회
-    db.get(
-      'SELECT group_ids FROM client_group_backup WHERE client_name = ?',
-      [clientName],
-      (err, backup) => {
-        if (err) {
-          console.error(`❌ 그룹 설정 복원 조회 실패: ${clientName} - ${err.message}`);
-          return;
-        }
-        
-        if (backup && backup.group_ids) {
-          try {
-            const groupIds = JSON.parse(backup.group_ids);
-            console.log(`📋 복원할 그룹 ID들: ${groupIds.join(', ')}`);
-            
-            // 각 그룹에 클라이언트 다시 추가
-            groupIds.forEach(groupId => {
-              db.run(
-                'INSERT OR IGNORE INTO group_clients (group_id, client_id) VALUES (?, ?)',
-                [groupId, clientId],
-                function(err) {
-                  if (!err && this.changes > 0) {
-                    console.log(`✅ 그룹 ID ${groupId}에 클라이언트 ${clientName} 복원 완료`);
-                  } else if (this.changes === 0) {
-                    console.log(`ℹ️ 그룹 ID ${groupId}에 클라이언트 ${clientName} 이미 존재`);
-                  } else {
-                    console.error(`❌ 그룹 ID ${groupId} 복원 실패: ${err.message}`);
-                  }
-                }
-              );
-            });
-            
-            // 그룹 정보 업데이트 이벤트 전송
-            setTimeout(() => {
-              io.emit('groups_updated');
-              console.log(`📡 그룹 업데이트 이벤트 전송 완료: ${clientName}`);
-            }, 1000);
-            
-          } catch (parseError) {
-            console.error(`❌ 그룹 ID 파싱 실패: ${clientName} - ${parseError.message}`);
-          }
-        } else {
-          console.log(`ℹ️ 클라이언트 ${clientName}의 복원할 그룹 설정 없음`);
-        }
-      }
-    );
-  }
   
   // 명령 실행 결과 응답
   socket.on('execution_result', (data) => {
