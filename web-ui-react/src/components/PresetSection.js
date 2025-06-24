@@ -26,7 +26,11 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
       if (response.ok) {
         const statusData = await response.json();
         console.log(`✅ 프리셋 상태 조회 성공:`, statusData);
-        setPresetStatuses(prev => new Map(prev.set(presetId, statusData)));
+        setPresetStatuses(prev => {
+          const newMap = new Map(prev);
+          newMap.set(presetId, statusData);
+          return newMap;
+        });
         return statusData;
       } else {
         console.error(`❌ 프리셋 상태 조회 실패: ${response.status} ${response.statusText}`);
@@ -45,13 +49,17 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
     await Promise.all(statusPromises);
   };
 
+  // 클라이언트 상태 변경 시 프리셋 상태 자동 업데이트
+  useEffect(() => {
+    if (clients && clients.length > 0) {
+      // 클라이언트 상태가 변경되면 모든 프리셋 상태를 다시 조회
+      fetchAllPresetStatuses();
+    }
+  }, [clients]);
+
   // 컴포넌트 마운트 시 프리셋 상태 조회
   useEffect(() => {
     fetchAllPresetStatuses();
-    
-    // 10초마다 상태 업데이트
-    const interval = setInterval(fetchAllPresetStatuses, 10000);
-    return () => clearInterval(interval);
   }, [presets]);
 
   const resetForm = () => {
@@ -207,6 +215,10 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
       } else {
         showToast(`프리셋 "${preset.name}" 실행이 시작되었습니다.`, 'success');
       }
+      
+      // 프리셋 실행 후 상태 다시 조회
+      await fetchPresetStatus(preset.id);
+      
     } catch (error) {
       showToast(`프리셋 실행 실패: ${error.message}`, 'error');
       // 실행 실패 시 실행 중 상태 제거
@@ -240,6 +252,10 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
       });
       
       showToast(`프리셋 "${preset.name}" 정지 요청이 전송되었습니다.`, 'info');
+      
+      // 프리셋 정지 후 상태 다시 조회
+      await fetchPresetStatus(preset.id);
+      
     } catch (error) {
       showToast(`프리셋 정지 실패: ${error.message}`, 'error');
     }
@@ -325,7 +341,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                   const presetStatus = presetStatuses.get(preset.id);
                   
                   return (
-                      <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${isRunning ? 'running' : ''}`}>
+                      <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${isRunning ? 'running' : ''} ${presetStatus ? `status-${presetStatus.overallStatusCode}` : ''}`}>
                           <input 
                               type="checkbox" 
                               className="preset-checkbox" 
@@ -335,31 +351,12 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                               onClick={(e) => e.stopPropagation()}
                           />
                           <div className="preset-content">
-                              <div className="preset-name">
-                                  {preset.name}
-                                  {presetStatus && (
-                                    <span className={`status-indicator status-${presetStatus.overallStatusCode}`}>
-                                      {presetStatus.overallStatusCode === 'green' && ' 🟢 실행중'}
-                                      {presetStatus.overallStatusCode === 'blue' && ' 🔵 실행대기'}
-                                      {presetStatus.overallStatusCode === 'yellow' && ' 🟡 준비불완전'}
-                                      {presetStatus.overallStatusCode === 'red' && ' 🔴 비정상종료'}
-                                    </span>
-                                  )}
-                                  {isRunning && !presetStatus && <span className="running-indicator"> 🔴 실행중</span>}
+                              <div className="preset-card-header">
+                                  <span className="preset-name">{preset.name}</span>
                               </div>
                               {preset.description && <div className="preset-info">{preset.description}</div>}
                               <div className="preset-info">그룹: {group ? group.name : '삭제된 그룹'}</div>
-                              <div className="preset-info">{clientCount}대 클라이언트</div>
-                              {presetStatus && (
-                                <div className="preset-status-info">
-                                  <small>
-                                    {presetStatus.summary.running > 0 && `실행중: ${presetStatus.summary.running}개 `}
-                                    {presetStatus.summary.ready > 0 && `대기: ${presetStatus.summary.ready}개 `}
-                                    {presetStatus.summary.warning > 0 && `오프라인: ${presetStatus.summary.warning}개 `}
-                                    {presetStatus.summary.crashed > 0 && `비정상종료: ${presetStatus.summary.crashed}개`}
-                                  </small>
-                                </div>
-                              )}
+                              <div className="preset-info">{clientCount}대 디스플레이 서버</div>
                           </div>
                           <div className="preset-actions">
                               {presetStatus && presetStatus.overallStatusCode === 'red' ? (

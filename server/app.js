@@ -39,8 +39,10 @@ function initializeDatabase() {
       ip_address TEXT,
       port INTEGER DEFAULT 8081,
       status TEXT DEFAULT 'offline',
+      current_preset_id INTEGER DEFAULT NULL,
       last_seen DATETIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (current_preset_id) REFERENCES presets (id)
     )`,
     `CREATE TABLE IF NOT EXISTS groups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -688,22 +690,40 @@ app.post('/api/presets/:id/execute', (req, res) => {
             presetId: preset.id
           });
           console.log(`📤 클라이언트 ${client.name}에 명령 전송: ${command}`);
+          
+          // 클라이언트 상태를 running으로 업데이트
+          db.run(
+            'UPDATE clients SET status = "running", current_preset_id = ? WHERE id = ?',
+            [preset.id, client.id],
+            (err) => {
+              if (!err) {
+                console.log(`🔄 클라이언트 ${client.name} 상태를 running으로 업데이트 (프리셋 ID: ${preset.id})`);
+                io.emit('client_status_changed', { 
+                  name: client.name, 
+                  status: 'running',
+                  current_preset_id: preset.id,
+                  reason: '프리셋 실행 중'
+                });
+              }
+            }
+          );
         } else {
           // 오프라인 클라이언트는 명령을 전송하지 않고 경고만 추가
           warnings.push(`클라이언트 ${client.name}가 연결되지 않았습니다.`);
           console.log(`⚠️ 오프라인 클라이언트 ${client.name} - 명령 전송 건너뜀`);
         }
         
-        // 실행 히스토리 기록
+        // 실행 히스토리 기록 (상태를 정확히 기록)
+        const executionStatus = (clientSocket && clientSocket.connected) ? 'executing' : 'failed_offline';
         db.run(
           'INSERT INTO execution_history (preset_id, client_id, status) VALUES (?, ?, ?)',
-          [preset.id, client.id, 'executing'],
+          [preset.id, client.id, executionStatus],
           function(err) {
             if (!err) {
               executionResults.push({
                 clientId: client.id,
                 clientName: client.name,
-                status: client.status,
+                status: (clientSocket && clientSocket.connected) ? 'running' : 'offline',
                 executionId: this.lastID
               });
             }
@@ -956,21 +976,27 @@ app.get('/api/presets/:id/status', (req, res) => {
           reason = '오프라인 상태';
           hasOfflineClient = true;
         }
-        // 2. 실행 중 체크 (초록)
-        else if (client.status === 'running') {
+        // 2. 현재 프리셋 실행 중 체크 (초록) - 정확한 프리셋 확인
+        else if (client.status === 'running' && client.current_preset_id === preset.id) {
           status = 'running';
           statusCode = 'green';
-          reason = '실행 중';
+          reason = '현재 프리셋 실행 중';
           hasRunningClient = true;
         }
-        // 3. 비정상 종료 체크 (빨강)
+        // 3. 다른 프리셋 실행 중 체크 (파랑) - 다른 프리셋이 실행 중
+        else if (client.status === 'running' && client.current_preset_id !== preset.id) {
+          status = 'ready';
+          statusCode = 'blue';
+          reason = '다른 프리셋 실행 중';
+        }
+        // 4. 비정상 종료 체크 (빨강)
         else if (client.status === 'crashed') {
           status = 'crashed';
           statusCode = 'red';
           reason = '비정상 종료';
           hasCrashedClient = true;
         }
-        // 4. 온라인 상태 (파랑)
+        // 5. 온라인 상태 (파랑)
         else if (client.status === 'online') {
           status = 'ready';
           statusCode = 'blue';
@@ -983,7 +1009,8 @@ app.get('/api/presets/:id/status', (req, res) => {
           status: status,
           statusCode: statusCode,
           reason: reason,
-          originalStatus: client.status
+          originalStatus: client.status,
+          currentPresetId: client.current_preset_id
         });
       });
       
@@ -1203,17 +1230,42 @@ io.on('connection', (socket) => {
   
   // 명령 실행 결과 응답
   socket.on('execution_result', (data) => {
-    const { executionId, status, result } = data;
+    const { executionId, clientName, status, result } = data;
     
-    db.run(
-      'UPDATE execution_history SET status = ? WHERE id = ?',
-      [status, executionId],
-      (err) => {
-        if (!err) {
-          io.emit('execution_updated', { executionId, status, result });
+    console.log(`📊 명령 실행 결과 수신: ${clientName} - ${status}`);
+    
+    // 실행 히스토리 업데이트
+    if (executionId) {
+      db.run(
+        'UPDATE execution_history SET status = ? WHERE id = ?',
+        [status, executionId],
+        (err) => {
+          if (!err) {
+            console.log(`✅ 실행 히스토리 업데이트: ${executionId} -> ${status}`);
+            io.emit('execution_updated', { executionId, status, result });
+          }
         }
-      }
-    );
+      );
+    }
+    
+    // 클라이언트 상태를 online으로 변경 (명령 실행 완료)
+    if (clientName) {
+      db.run(
+        'UPDATE clients SET status = "online", current_preset_id = NULL WHERE name = ?',
+        [clientName],
+        (err) => {
+          if (!err) {
+            console.log(`🔄 클라이언트 상태 변경: ${clientName} -> online (명령 실행 완료)`);
+            io.emit('client_status_changed', { 
+              name: clientName, 
+              status: 'online',
+              current_preset_id: null,
+              reason: '명령 실행 완료'
+            });
+          }
+        }
+      );
+    }
   });
   
   // 연결 확인 응답 처리
@@ -1305,18 +1357,18 @@ io.on('connection', (socket) => {
     
     // 클라이언트 상태 업데이트 로직
     let newClientStatus = 'online'; // 기본값
-    
-    // 비정상 종료된 프로세스가 있으면 'crashed' 상태로 설정
-    if (crashedProcesses.length > 0) {
-      newClientStatus = 'crashed';
-      console.log(`⚠️ ${clientName}에서 비정상 종료된 프로세스: ${crashedProcesses.join(', ')}`);
-    }
-    // 실행 중인 프로세스가 있으면 'running' 상태로 설정
-    else if (runningProcesses.length > 0) {
+
+    // 실행 중인 프로세스가 1개라도 있으면 무조건 running
+    if (runningProcesses.length > 0) {
       newClientStatus = 'running';
       console.log(`✅ ${clientName}에서 실행 중인 프로세스: ${runningProcesses.join(', ')}`);
     }
-    // 둘 다 없으면 'online' 상태 (실행 대기)
+    // 실행 중인 프로세스가 없고, 비정상 종료된 프로세스가 있으면 crashed
+    else if (crashedProcesses.length > 0) {
+      newClientStatus = 'crashed';
+      console.log(`⚠️ ${clientName}에서 비정상 종료된 프로세스: ${crashedProcesses.join(', ')}`);
+    }
+    // 둘 다 없으면 online
     else {
       newClientStatus = 'online';
       console.log(`📋 ${clientName} - 실행 대기 상태`);
@@ -1468,4 +1520,4 @@ process.on('SIGINT', () => {
     }
     process.exit(0);
   });
-}); 
+});

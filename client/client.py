@@ -261,7 +261,7 @@ class SwitchboardClient:
                     result = self.execute_command(command)
                     print(f"✅ 명령어 실행 완료: {result}")
                     
-                    # 실행 결과를 서버에 전송
+                    # 실행 결과를 서버에 전송 (성공 상태)
                     self.sio.emit('execution_result', {
                         'executionId': data.get('executionId'),
                         'clientId': self.client_id,
@@ -269,6 +269,7 @@ class SwitchboardClient:
                         'command': command,
                         'result': result,
                         'presetId': preset_id,
+                        'status': 'completed',  # 명시적으로 완료 상태 전송
                         'timestamp': datetime.now().isoformat()
                     })
                     
@@ -284,6 +285,7 @@ class SwitchboardClient:
                         'command': command,
                         'result': {'error': error_msg},
                         'presetId': preset_id,
+                        'status': 'failed',  # 실패 상태 전송
                         'timestamp': datetime.now().isoformat()
                     })
             
@@ -537,11 +539,12 @@ class SwitchboardClient:
             # 프로세스 이름 추출 (명령어에서 실행 파일명 추출)
             process_name = self.extract_process_name(system_command)
             
+            # 백그라운드에서 실행 (communicate 사용하지 않음)
             process = subprocess.Popen(
                 system_command,
                 shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True
             )
             
@@ -549,30 +552,16 @@ class SwitchboardClient:
             if process_name:
                 self.add_running_process(process_name, process.pid, system_command)
             
-            stdout, stderr = process.communicate(timeout=30)
-            
-            # 프로세스가 종료되면 추적 목록에서 제거
-            if process_name:
-                self.remove_running_process(process_name)
+            print(f"✅ 백그라운드 프로세스 시작: {process_name} (PID: {process.pid})")
             
             return {
-                'success': process.returncode == 0,
-                'stdout': stdout,
-                'stderr': stderr,
-                'return_code': process.returncode,
+                'success': True,
+                'process_id': process.pid,
+                'process_name': process_name,
+                'message': f'프로세스가 백그라운드에서 실행 중입니다 (PID: {process.pid})',
                 'timestamp': datetime.now().isoformat()
             }
             
-        except subprocess.TimeoutExpired:
-            process.kill()
-            # 타임아웃 시에도 프로세스 추적 제거
-            if process_name:
-                self.remove_running_process(process_name)
-            return {
-                'success': False,
-                'error': '명령 실행 시간 초과',
-                'timestamp': datetime.now().isoformat()
-            }
         except Exception as e:
             # 오류 시에도 프로세스 추적 제거
             if process_name:

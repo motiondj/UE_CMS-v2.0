@@ -349,11 +349,7 @@ body {
 }
 
 .status-indicator {
-    font-size: 12px;
-    font-weight: 500;
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-left: 8px;
+    display: none;
 }
 
 .status-indicator.status-green {
@@ -1156,6 +1152,71 @@ textarea.form-input {
     flex-direction: column;
     gap: 4px;
     flex-shrink: 0;
+}
+
+/* 프리셋 카드 상태별 스타일 */
+.preset-card.status-green {
+    border: 2px solid #22c55e;
+    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);
+}
+
+.preset-card.status-blue {
+    border: 2px solid #3b82f6;
+    background: linear-gradient(135deg, #f0f9ff 0%, #dbeafe 100%);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+}
+
+.preset-card.status-yellow {
+    border: 2px solid #eab308;
+    background: linear-gradient(135deg, #fefce8 0%, #fef3c7 100%);
+    box-shadow: 0 4px 12px rgba(234, 179, 8, 0.2);
+}
+
+.preset-card.status-red {
+    border: 2px solid #ef4444;
+    background: linear-gradient(135deg, #fef2f2 0%, #fecaca 100%);
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+}
+
+/* 다크 모드 프리셋 카드 상태별 스타일 */
+[data-theme="dark"] .preset-card.status-green {
+    border: 2px solid #22c55e;
+    background: linear-gradient(135deg, #14532d 0%, #166534 100%);
+    box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+}
+
+[data-theme="dark"] .preset-card.status-blue {
+    border: 2px solid #3b82f6;
+    background: linear-gradient(135deg, #1e3a8a 0%, #1d4ed8 100%);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+[data-theme="dark"] .preset-card.status-yellow {
+    border: 2px solid #eab308;
+    background: linear-gradient(135deg, #422006 0%, #78350f 100%);
+    box-shadow: 0 4px 12px rgba(234, 179, 8, 0.3);
+}
+
+[data-theme="dark"] .preset-card.status-red {
+    border: 2px solid #ef4444;
+    background: linear-gradient(135deg, #450a0a 0%, #7f1d1d 100%);
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+/* 상태 텍스트 스타일 */
+.status-text {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--text-primary);
+}
+
+[data-theme="dark"] .status-text {
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-primary);
 }
 
 /* 다크 테마에서의 상태 표시 */
