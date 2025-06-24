@@ -1,20 +1,28 @@
 import React, { useState, useEffect } from 'react';
 
-const GroupModal = ({ onClose, onSave, clients, group }) => {
+const GroupModal = ({ isOpen, onClose, onSave, clients, initialData }) => {
   const [formData, setFormData] = useState({
     name: '',
+    description: '',
     clientIds: []
   });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (group) {
+    if (initialData) {
       setFormData({
-        name: group.name || '',
-        clientIds: group.clientIds || []
+        name: initialData.name || '',
+        description: initialData.description || '',
+        clientIds: initialData.clientIds || []
+      });
+    } else {
+      setFormData({
+        name: '',
+        description: '',
+        clientIds: []
       });
     }
-  }, [group]);
+  }, [initialData, isOpen]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -39,6 +47,10 @@ const GroupModal = ({ onClose, onSave, clients, group }) => {
       alert('그룹 이름은 필수입니다.');
       return;
     }
+    if (formData.clientIds.length === 0) {
+      alert('최소 하나 이상의 디스플레이 서버를 선택해주세요.');
+      return;
+    }
     setLoading(true);
     try {
       await onSave(formData);
@@ -47,11 +59,13 @@ const GroupModal = ({ onClose, onSave, clients, group }) => {
     }
   };
 
+  if (!isOpen) return null;
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2 className="modal-title">{group ? '그룹 수정' : '그룹 추가'}</h2>
+          <h2 className="modal-title">{initialData ? '그룹 수정' : '그룹 추가'}</h2>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <form onSubmit={handleSubmit}>
@@ -69,7 +83,19 @@ const GroupModal = ({ onClose, onSave, clients, group }) => {
             />
           </div>
           <div className="form-group">
-            <label className="form-label">그룹 클라이언트 선택</label>
+            <label className="form-label" htmlFor="description">설명 (선택)</label>
+            <textarea
+              id="description"
+              name="description"
+              className="form-input"
+              rows="2"
+              placeholder="그룹에 대한 설명을 입력하세요 (위치, 용도 등)"
+              value={formData.description}
+              onChange={handleChange}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">그룹 클라이언트 선택 *</label>
             <div style={{ maxHeight: 150, overflowY: 'auto', border: '1px solid #eee', borderRadius: 6, padding: 8 }}>
               {clients.length === 0 ? (
                 <div style={{ color: '#888', fontSize: 14 }}>등록된 클라이언트가 없습니다.</div>

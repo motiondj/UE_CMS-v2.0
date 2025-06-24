@@ -33,6 +33,10 @@ class SwitchboardClient:
         self.sio = socketio.Client()
         self.running = False
         
+        # 프로세스 모니터링을 위한 변수들 추가
+        self.running_processes = {}  # {process_name: {'pid': pid, 'command': command, 'start_time': timestamp}}
+        self.process_monitor_thread = None
+        
         # 중복 실행 방지를 위한 프로세스 확인
         if not self.check_duplicate_process():
             print(f"❌ 이미 실행 중인 클라이언트가 있습니다. (이름: {self.client_name})")
@@ -162,6 +166,7 @@ class SwitchboardClient:
         print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
         
         self.start_heartbeat()
+        self.start_process_monitor()  # 프로세스 모니터링 시작
     
     def on_disconnect(self):
         """Socket.io 연결 해제 시 호출됩니다."""
@@ -370,6 +375,104 @@ class SwitchboardClient:
                 'timestamp': datetime.now().isoformat()
             })
     
+    def add_running_process(self, process_name, pid, command):
+        """실행 중인 프로세스를 추적 목록에 추가합니다."""
+        try:
+            self.running_processes[process_name] = {
+                'pid': pid,
+                'command': command,
+                'start_time': datetime.now().isoformat()
+            }
+            print(f"📝 프로세스 추적 시작: {process_name} (PID: {pid})")
+            logging.info(f"프로세스 추적 시작: {process_name} (PID: {pid})")
+        except Exception as e:
+            print(f"❌ 프로세스 추적 추가 실패: {e}")
+            logging.error(f"프로세스 추적 추가 실패: {e}")
+    
+    def remove_running_process(self, process_name):
+        """실행 중인 프로세스를 추적 목록에서 제거합니다."""
+        try:
+            if process_name in self.running_processes:
+                removed = self.running_processes.pop(process_name)
+                print(f"📝 프로세스 추적 종료: {process_name} (PID: {removed['pid']})")
+                logging.info(f"프로세스 추적 종료: {process_name} (PID: {removed['pid']})")
+                return removed
+        except Exception as e:
+            print(f"❌ 프로세스 추적 제거 실패: {e}")
+            logging.error(f"프로세스 추적 제거 실패: {e}")
+        return None
+    
+    def check_process_status(self):
+        """실행 중인 프로세스들의 상태를 확인합니다."""
+        try:
+            current_processes = {}
+            crashed_processes = []
+            
+            for process_name, process_info in self.running_processes.items():
+                try:
+                    # 프로세스가 살아있는지 확인
+                    proc = psutil.Process(process_info['pid'])
+                    if proc.is_running():
+                        current_processes[process_name] = process_info
+                    else:
+                        crashed_processes.append(process_name)
+                        print(f"⚠️ 프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
+                        logging.warning(f"프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    crashed_processes.append(process_name)
+                    print(f"⚠️ 프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
+                    logging.warning(f"프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
+            
+            # 비정상 종료된 프로세스들을 추적 목록에서 제거
+            for process_name in crashed_processes:
+                self.remove_running_process(process_name)
+            
+            # 현재 실행 중인 프로세스 목록 업데이트
+            self.running_processes = current_processes
+            
+            return {
+                'running': list(current_processes.keys()),
+                'crashed': crashed_processes
+            }
+            
+        except Exception as e:
+            print(f"❌ 프로세스 상태 확인 실패: {e}")
+            logging.error(f"프로세스 상태 확인 실패: {e}")
+            return {'running': [], 'crashed': []}
+    
+    def start_process_monitor(self):
+        """프로세스 모니터링을 시작합니다."""
+        def monitor_loop():
+            print(f"🔍 프로세스 모니터링 시작: {self.client_name}")
+            logging.info(f"프로세스 모니터링 시작: {self.client_name}")
+            
+            while self.running:
+                try:
+                    # 프로세스 상태 확인
+                    status = self.check_process_status()
+                    
+                    # 서버에 프로세스 상태 전송
+                    if self.sio.connected:
+                        self.sio.emit('process_status', {
+                            'clientName': self.client_name,
+                            'clientId': self.client_id,
+                            'runningProcesses': status['running'],
+                            'crashedProcesses': status['crashed'],
+                            'timestamp': datetime.now().isoformat()
+                        })
+                    
+                    time.sleep(10)  # 10초마다 체크
+                    
+                except Exception as e:
+                    print(f"❌ 프로세스 모니터링 오류: {e}")
+                    logging.error(f"프로세스 모니터링 오류: {e}")
+                    time.sleep(10)
+        
+        # 프로세스 모니터링 스레드 시작
+        self.process_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        self.process_monitor_thread.start()
+        print(f"✅ 프로세스 모니터링 스레드 시작: {self.client_name}")
+    
     def stop_running_processes(self):
         """실행 중인 프로세스들을 정지합니다."""
         try:
@@ -394,6 +497,10 @@ class SwitchboardClient:
                         print(f"🛑 프로세스 정지: {proc.info['name']} (PID: {proc.info['pid']})")
                         proc.terminate()
                         stopped_count += 1
+                        
+                        # 추적 목록에서도 제거
+                        self.remove_running_process(proc.info['name'])
+                        
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
             
@@ -427,6 +534,9 @@ class SwitchboardClient:
         try:
             system_command = command.replace('system://', '')
             
+            # 프로세스 이름 추출 (명령어에서 실행 파일명 추출)
+            process_name = self.extract_process_name(system_command)
+            
             process = subprocess.Popen(
                 system_command,
                 shell=True,
@@ -435,7 +545,15 @@ class SwitchboardClient:
                 text=True
             )
             
+            # 실행된 프로세스를 추적 목록에 추가
+            if process_name:
+                self.add_running_process(process_name, process.pid, system_command)
+            
             stdout, stderr = process.communicate(timeout=30)
+            
+            # 프로세스가 종료되면 추적 목록에서 제거
+            if process_name:
+                self.remove_running_process(process_name)
             
             return {
                 'success': process.returncode == 0,
@@ -447,17 +565,38 @@ class SwitchboardClient:
             
         except subprocess.TimeoutExpired:
             process.kill()
+            # 타임아웃 시에도 프로세스 추적 제거
+            if process_name:
+                self.remove_running_process(process_name)
             return {
                 'success': False,
                 'error': '명령 실행 시간 초과',
                 'timestamp': datetime.now().isoformat()
             }
         except Exception as e:
+            # 오류 시에도 프로세스 추적 제거
+            if process_name:
+                self.remove_running_process(process_name)
             return {
                 'success': False,
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
             }
+    
+    def extract_process_name(self, command):
+        """명령어에서 프로세스 이름을 추출합니다."""
+        try:
+            # 명령어에서 실행 파일명 추출
+            parts = command.strip().split()
+            if parts:
+                # 첫 번째 부분이 실행 파일 경로
+                exe_path = parts[0]
+                # 경로에서 파일명만 추출
+                process_name = os.path.basename(exe_path)
+                return process_name
+        except Exception as e:
+            print(f"⚠️ 프로세스 이름 추출 실패: {e}")
+        return None
     
     def start(self):
         """클라이언트를 시작합니다."""

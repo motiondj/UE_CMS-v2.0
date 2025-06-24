@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedPresets, setSelectedPresets] = useState(new Set());
   const [runningPresets, setRunningPresets] = useState(new Set()); // 실행 중인 프리셋 추적
+  const [presetStatuses, setPresetStatuses] = useState(new Map()); // 프리셋 상태 추적
   
   const [formData, setFormData] = useState({
     name: '',
@@ -15,6 +16,44 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
 
   const safeGroups = groups || [];
   
+  // 프리셋 상태 조회 함수
+  const fetchPresetStatus = async (presetId) => {
+    try {
+      console.log(`🔍 프리셋 상태 조회 시작: ID ${presetId}`);
+      const response = await fetch(`${apiBase}/api/presets/${presetId}/status`);
+      console.log(`📡 프리셋 상태 API 응답: ${response.status} ${response.statusText}`);
+      
+      if (response.ok) {
+        const statusData = await response.json();
+        console.log(`✅ 프리셋 상태 조회 성공:`, statusData);
+        setPresetStatuses(prev => new Map(prev.set(presetId, statusData)));
+        return statusData;
+      } else {
+        console.error(`❌ 프리셋 상태 조회 실패: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error(`❌ 프리셋 상태 조회 오류: ${error.message}`);
+    }
+    return null;
+  };
+
+  // 모든 프리셋 상태 조회
+  const fetchAllPresetStatuses = async () => {
+    if (!presets || presets.length === 0) return;
+    
+    const statusPromises = presets.map(preset => fetchPresetStatus(preset.id));
+    await Promise.all(statusPromises);
+  };
+
+  // 컴포넌트 마운트 시 프리셋 상태 조회
+  useEffect(() => {
+    fetchAllPresetStatuses();
+    
+    // 10초마다 상태 업데이트
+    const interval = setInterval(fetchAllPresetStatuses, 10000);
+    return () => clearInterval(interval);
+  }, [presets]);
+
   const resetForm = () => {
     setFormData({
       name: '',
@@ -283,6 +322,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                   const group = safeGroups.find(g => g.id === preset.target_group_id);
                   const clientCount = group ? (group.clients || []).length : 0;
                   const isRunning = runningPresets.has(preset.id);
+                  const presetStatus = presetStatuses.get(preset.id);
                   
                   return (
                       <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${isRunning ? 'running' : ''}`}>
@@ -297,14 +337,60 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                           <div className="preset-content">
                               <div className="preset-name">
                                   {preset.name}
-                                  {isRunning && <span className="running-indicator"> 🔴 실행중</span>}
+                                  {presetStatus && (
+                                    <span className={`status-indicator status-${presetStatus.overallStatusCode}`}>
+                                      {presetStatus.overallStatusCode === 'green' && ' 🟢 실행중'}
+                                      {presetStatus.overallStatusCode === 'blue' && ' 🔵 실행대기'}
+                                      {presetStatus.overallStatusCode === 'yellow' && ' 🟡 준비불완전'}
+                                      {presetStatus.overallStatusCode === 'red' && ' 🔴 비정상종료'}
+                                    </span>
+                                  )}
+                                  {isRunning && !presetStatus && <span className="running-indicator"> 🔴 실행중</span>}
                               </div>
                               {preset.description && <div className="preset-info">{preset.description}</div>}
                               <div className="preset-info">그룹: {group ? group.name : '삭제된 그룹'}</div>
                               <div className="preset-info">{clientCount}대 클라이언트</div>
+                              {presetStatus && (
+                                <div className="preset-status-info">
+                                  <small>
+                                    {presetStatus.summary.running > 0 && `실행중: ${presetStatus.summary.running}개 `}
+                                    {presetStatus.summary.ready > 0 && `대기: ${presetStatus.summary.ready}개 `}
+                                    {presetStatus.summary.warning > 0 && `오프라인: ${presetStatus.summary.warning}개 `}
+                                    {presetStatus.summary.crashed > 0 && `비정상종료: ${presetStatus.summary.crashed}개`}
+                                  </small>
+                                </div>
+                              )}
                           </div>
                           <div className="preset-actions">
-                              {isRunning ? (
+                              {presetStatus && presetStatus.overallStatusCode === 'red' ? (
+                                  // 비정상 종료 상태: 실행 버튼 표시
+                                  <button 
+                                      className="btn btn-primary btn-bulk" 
+                                      onClick={() => runPreset(preset)} 
+                                      title="다시 실행"
+                                  >
+                                      실행
+                                  </button>
+                              ) : presetStatus && presetStatus.overallStatusCode === 'green' ? (
+                                  // 실행 중 상태: 정지 버튼 표시
+                                  <button 
+                                      className="btn btn-danger btn-bulk" 
+                                      onClick={() => stopPreset(preset)} 
+                                      title="정지"
+                                  >
+                                      정지
+                                  </button>
+                              ) : presetStatus && presetStatus.overallStatusCode === 'yellow' ? (
+                                  // 준비 불완전 상태: 실행 버튼 비활성화
+                                  <button 
+                                      className="btn btn-secondary btn-bulk" 
+                                      disabled
+                                      title="오프라인 클라이언트가 있어 실행할 수 없습니다"
+                                  >
+                                      실행불가
+                                  </button>
+                              ) : isRunning ? (
+                                  // 기존 로직 (상태 정보가 없는 경우)
                                   <button 
                                       className="btn btn-danger btn-bulk" 
                                       onClick={() => stopPreset(preset)} 
@@ -313,6 +399,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                                       정지
                                   </button>
                               ) : (
+                                  // 기본 실행 버튼
                                   <button 
                                       className="btn btn-primary btn-bulk" 
                                       onClick={() => runPreset(preset)} 

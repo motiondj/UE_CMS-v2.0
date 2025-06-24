@@ -349,8 +349,40 @@ body {
 }
 
 .status-indicator {
-    margin-left: 4px;
-    font-size: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+}
+
+.status-indicator.status-green {
+    color: #16a34a;
+    background-color: #dcfce7;
+}
+
+.status-indicator.status-blue {
+    color: #2563eb;
+    background-color: #dbeafe;
+}
+
+.status-indicator.status-yellow {
+    color: #ca8a04;
+    background-color: #fef3c7;
+}
+
+.status-indicator.status-red {
+    color: #dc2626;
+    background-color: #fef2f2;
+}
+
+.preset-status-info {
+    margin-top: 8px;
+    padding: 4px 8px;
+    background-color: var(--bg-tertiary);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
 }
 
 /* 일괄 제어 UI */
@@ -1124,4 +1156,29 @@ textarea.form-input {
     flex-direction: column;
     gap: 4px;
     flex-shrink: 0;
+}
+
+/* 다크 테마에서의 상태 표시 */
+[data-theme="dark"] .status-indicator.status-green {
+    color: #4ade80;
+    background-color: #14532d;
+}
+
+[data-theme="dark"] .status-indicator.status-blue {
+    color: #60a5fa;
+    background-color: #1e3a8a;
+}
+
+[data-theme="dark"] .status-indicator.status-yellow {
+    color: #fbbf24;
+    background-color: #422006;
+}
+
+[data-theme="dark"] .status-indicator.status-red {
+    color: #f87171;
+    background-color: #450a0a;
+}
+
+[data-theme="dark"] .preset-status-info {
+    background-color: #334155;
 } 

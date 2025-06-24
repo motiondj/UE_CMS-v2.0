@@ -147,12 +147,12 @@ app.get('/api/health', (req, res) => {
 
 // 클라이언트 관리 API
 app.get('/api/clients', (req, res) => {
-  db.all('SELECT * FROM clients ORDER BY created_at DESC', (err, rows) => {
+  db.all('SELECT * FROM clients ORDER BY id', (err, clients) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json(rows);
+    res.json(clients);
   });
 });
 
@@ -853,6 +853,182 @@ app.get('/api/execution-history', (req, res) => {
   });
 });
 
+// 프로세스 상태 조회 API
+app.get('/api/process-status', (req, res) => {
+  try {
+    const processStatus = global.processStatus || new Map();
+    const statusData = {};
+    
+    // Map을 일반 객체로 변환
+    for (const [clientName, status] of processStatus) {
+      statusData[clientName] = status;
+    }
+    
+    res.json({
+      success: true,
+      data: statusData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 특정 클라이언트의 프로세스 상태 조회
+app.get('/api/process-status/:clientName', (req, res) => {
+  try {
+    const { clientName } = req.params;
+    const processStatus = global.processStatus || new Map();
+    
+    if (processStatus.has(clientName)) {
+      res.json({
+        success: true,
+        data: processStatus.get(clientName),
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: '클라이언트의 프로세스 상태를 찾을 수 없습니다.'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 프리셋 상태 판정 API (4단계 상태: 초록/파랑/노랑/빨강)
+app.get('/api/presets/:id/status', (req, res) => {
+  const { id } = req.params;
+  console.log(`🔍 프리셋 상태 판정 요청: ID ${id}`);
+  
+  // 프리셋 정보 조회
+  db.get('SELECT * FROM presets WHERE id = ?', [id], (err, preset) => {
+    if (err) {
+      console.error(`❌ 프리셋 조회 실패: ${err.message}`);
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    if (!preset) {
+      console.error(`❌ 프리셋을 찾을 수 없음: ID ${id}`);
+      res.status(404).json({ error: '프리셋을 찾을 수 없습니다.' });
+      return;
+    }
+    
+    // 타겟 그룹의 클라이언트들 조회
+    let query = 'SELECT c.* FROM clients c';
+    let params = [];
+    
+    if (preset.target_group_id) {
+      query += ' JOIN group_clients gc ON c.id = gc.client_id WHERE gc.group_id = ?';
+      params.push(preset.target_group_id);
+    }
+    
+    db.all(query, params, (err, clients) => {
+      if (err) {
+        console.error(`❌ 클라이언트 조회 실패: ${err.message}`);
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      
+      // 각 클라이언트의 상태 판정
+      const clientStatuses = [];
+      let hasOfflineClient = false;
+      let hasRunningClient = false;
+      let hasCrashedClient = false;
+      
+      clients.forEach(client => {
+        let status = 'ready'; // 기본값: 파랑 (실행 대기)
+        let statusCode = 'blue';
+        let reason = '프리셋에 등록된 온라인 클라이언트';
+        
+        // 1. 오프라인 체크 (노랑)
+        if (client.status === 'offline') {
+          status = 'warning';
+          statusCode = 'yellow';
+          reason = '오프라인 상태';
+          hasOfflineClient = true;
+        }
+        // 2. 실행 중 체크 (초록)
+        else if (client.status === 'running') {
+          status = 'running';
+          statusCode = 'green';
+          reason = '실행 중';
+          hasRunningClient = true;
+        }
+        // 3. 비정상 종료 체크 (빨강)
+        else if (client.status === 'crashed') {
+          status = 'crashed';
+          statusCode = 'red';
+          reason = '비정상 종료';
+          hasCrashedClient = true;
+        }
+        // 4. 온라인 상태 (파랑)
+        else if (client.status === 'online') {
+          status = 'ready';
+          statusCode = 'blue';
+          reason = '실행 대기';
+        }
+        
+        clientStatuses.push({
+          clientId: client.id,
+          clientName: client.name,
+          status: status,
+          statusCode: statusCode,
+          reason: reason,
+          originalStatus: client.status
+        });
+      });
+      
+      // 전체 프리셋 상태 판정
+      let overallStatus = 'ready';
+      let overallStatusCode = 'blue';
+      let overallReason = '모든 클라이언트가 실행 대기 상태';
+      
+      if (hasCrashedClient) {
+        overallStatus = 'crashed';
+        overallStatusCode = 'red';
+        overallReason = '비정상 종료된 클라이언트가 있음';
+      } else if (hasRunningClient) {
+        overallStatus = 'running';
+        overallStatusCode = 'green';
+        overallReason = '실행 중인 클라이언트가 있음';
+      } else if (hasOfflineClient) {
+        overallStatus = 'warning';
+        overallStatusCode = 'yellow';
+        overallReason = '오프라인 클라이언트가 있음';
+      }
+      
+      const responseData = {
+        presetId: preset.id,
+        presetName: preset.name,
+        overallStatus: overallStatus,
+        overallStatusCode: overallStatusCode,
+        overallReason: overallReason,
+        clients: clientStatuses,
+        summary: {
+          total: clients.length,
+          ready: clientStatuses.filter(c => c.status === 'ready').length,
+          running: clientStatuses.filter(c => c.status === 'running').length,
+          warning: clientStatuses.filter(c => c.status === 'warning').length,
+          crashed: clientStatuses.filter(c => c.status === 'crashed').length
+        }
+      };
+      
+      console.log(`✅ 프리셋 상태 판정 완료: ${preset.name} - ${overallStatus} (${overallStatusCode})`);
+      
+      res.json(responseData);
+    });
+  });
+});
+
 // Socket.io 이벤트 처리
 const connectedClients = new Map(); // 클라이언트 소켓 추적
 
@@ -1063,8 +1239,6 @@ io.on('connection', (socket) => {
     const clientType = socket.clientType || 'Unknown';
     const clientName = socket.clientName || 'Unknown';
     
-    // 연결 해제 시 바로 오프라인 처리하지 않고, 주기적인 확인 로직에 맡김
-    // 이는 일시적인 네트워크 문제로 인한 '깜빡임' 현상을 방지하기 위함
     console.log(`🔌 [${clientType}] 클라이언트 소켓 연결 해제됨: ${clientName} (ID: ${socket.id})`);
     
     if (socket.clientName) {
@@ -1073,6 +1247,20 @@ io.on('connection', (socket) => {
       if (currentSocket && currentSocket.id === socket.id) {
         connectedClients.delete(socket.clientName);
         console.log(`🗑️ 클라이언트 소켓 제거: ${socket.clientName}`);
+        
+        // 즉시 오프라인으로 처리
+        db.run(
+          'UPDATE clients SET status = "offline" WHERE name = ?',
+          [socket.clientName],
+          (err) => {
+            if (!err) {
+              console.log(`🔄 ${socket.clientName} 즉시 오프라인으로 변경`);
+              io.emit('client_status_changed', { name: socket.clientName, status: 'offline' });
+            } else {
+              console.error(`❌ ${socket.clientName} 오프라인 처리 실패: ${err.message}`);
+            }
+          }
+        );
       } else {
         console.log(`⚠️ 다른 소켓이 이미 등록되어 있음 - 소켓 제거 건너뜀: ${socket.clientName}`);
       }
@@ -1090,6 +1278,79 @@ io.on('connection', (socket) => {
     
     // 그룹 정보도 함께 업데이트 (클라이언트 상태 변경이 그룹에 반영되도록)
     loadGroups();
+  });
+  
+  // 프로세스 상태 업데이트 이벤트 처리
+  socket.on('process_status', (data) => {
+    const { clientName, clientId, runningProcesses, crashedProcesses, timestamp } = data;
+    
+    console.log(`🔍 프로세스 상태 업데이트: ${clientName}`);
+    console.log(`  - 실행 중: ${runningProcesses.length}개`);
+    console.log(`  - 비정상 종료: ${crashedProcesses.length}개`);
+    
+    // 프로세스 상태를 데이터베이스에 저장
+    const processStatus = {
+      clientName,
+      clientId,
+      runningProcesses,
+      crashedProcesses,
+      timestamp
+    };
+    
+    // 프로세스 상태를 메모리에 저장 (실시간 상태 추적용)
+    if (!global.processStatus) {
+      global.processStatus = new Map();
+    }
+    global.processStatus.set(clientName, processStatus);
+    
+    // 클라이언트 상태 업데이트 로직
+    let newClientStatus = 'online'; // 기본값
+    
+    // 비정상 종료된 프로세스가 있으면 'crashed' 상태로 설정
+    if (crashedProcesses.length > 0) {
+      newClientStatus = 'crashed';
+      console.log(`⚠️ ${clientName}에서 비정상 종료된 프로세스: ${crashedProcesses.join(', ')}`);
+    }
+    // 실행 중인 프로세스가 있으면 'running' 상태로 설정
+    else if (runningProcesses.length > 0) {
+      newClientStatus = 'running';
+      console.log(`✅ ${clientName}에서 실행 중인 프로세스: ${runningProcesses.join(', ')}`);
+    }
+    // 둘 다 없으면 'online' 상태 (실행 대기)
+    else {
+      newClientStatus = 'online';
+      console.log(`📋 ${clientName} - 실행 대기 상태`);
+    }
+    
+    // 클라이언트 상태를 데이터베이스에 업데이트
+    db.run(
+      'UPDATE clients SET status = ? WHERE name = ?',
+      [newClientStatus, clientName],
+      (err) => {
+        if (!err) {
+          console.log(`✅ 클라이언트 상태 업데이트: ${clientName} -> ${newClientStatus}`);
+          
+          // 웹 클라이언트에 상태 변경 알림
+          io.emit('client_status_changed', { 
+            name: clientName, 
+            status: newClientStatus,
+            reason: newClientStatus === 'crashed' ? '비정상 종료' : 
+                   newClientStatus === 'running' ? '실행 중' : '실행 대기'
+          });
+        } else {
+          console.error(`❌ 클라이언트 상태 업데이트 실패: ${clientName} - ${err.message}`);
+        }
+      }
+    );
+    
+    // 웹 클라이언트에 프로세스 상태 변경 알림
+    io.emit('process_status_updated', {
+      clientName,
+      runningProcesses,
+      crashedProcesses,
+      timestamp,
+      clientStatus: newClientStatus
+    });
   });
 });
 

@@ -1,15 +1,11 @@
 import React, { useState } from 'react';
+import GroupModal from './GroupModal';
 import './GroupSection.css';
 
 const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
   const [selectedGroups, setSelectedGroups] = useState(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
-  const [selectedClients, setSelectedClients] = useState(new Set());
-  const [formData, setFormData] = useState({
-    name: '',
-    description: ''
-  });
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
@@ -29,32 +25,15 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
     setSelectedGroups(newSelected);
   };
 
-  const handleClientSelect = (clientId, checked) => {
-    const newSelected = new Set(selectedClients);
-    if (checked) {
-      newSelected.add(clientId);
-    } else {
-      newSelected.delete(clientId);
-    }
-    setSelectedClients(newSelected);
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (selectedClients.size === 0) {
-      showToast('최소 하나 이상의 디스플레이 서버를 선택해주세요.', 'error');
-      return;
-    }
-
-    const groupData = {
-      name: formData.name,
-      client_ids: Array.from(selectedClients)
-    };
-
+  const handleSaveGroup = async (formData) => {
     const isEditing = !!editingGroup;
     const url = isEditing ? `/api/groups/${editingGroup.id}` : '/api/groups';
     const method = isEditing ? 'PUT' : 'POST';
+
+    const groupData = {
+      name: formData.name,
+      client_ids: formData.clientIds
+    };
 
     try {
       const response = await fetch(url, {
@@ -83,27 +62,18 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
     }
   };
 
-  const resetForm = () => {
-    setFormData({ name: '', description: '' });
-    setSelectedClients(new Set());
-    setEditingGroup(null);
-  };
-
   const openAddModal = () => {
-    resetForm();
+    setEditingGroup(null);
     setShowAddModal(true);
   };
 
   const closeModal = () => {
     setShowAddModal(false);
-    resetForm();
+    setEditingGroup(null);
   };
 
   const openEditModal = (group) => {
     setEditingGroup(group);
-    setFormData({ name: group.name, description: group.description || '' });
-    const clientIds = new Set((group.clients || []).map(c => c.id));
-    setSelectedClients(clientIds);
     setShowAddModal(true);
   };
 
@@ -266,79 +236,17 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
 
       {/* 그룹 추가/편집 모달 */}
       {showAddModal && (
-        <div className="modal show">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h3>{editingGroup ? '👥 그룹 편집' : '👥 새 그룹 만들기'}</h3>
-              <span className="close" onClick={closeModal}>&times;</span>
-            </div>
-            
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label htmlFor="groupName">👥 그룹 이름</label>
-                <input 
-                  type="text" 
-                  id="groupName"
-                  className="form-input" 
-                  placeholder="예: 메인 디스플레이 월" 
-                  value={formData.name}
-                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                  required
-                />
-                <small className="form-help">알아보기 쉬운 그룹 이름</small>
-              </div>
-              
-              <div className="form-group">
-                <label htmlFor="groupDescription">📝 설명 (선택)</label>
-                <textarea 
-                  id="groupDescription"
-                  className="form-input" 
-                  rows="2" 
-                  placeholder="그룹에 대한 설명을 입력하세요 (위치, 용도 등)"
-                  value={formData.description}
-                  onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>🖥️ 포함할 디스플레이 서버</label>
-                <div className="radio-group">
-                  {clients.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
-                      🖥️ 먼저 클라이언트를 추가해주세요
-                    </div>
-                  ) : (
-                    clients.map(client => (
-                      <label 
-                        key={client.id} 
-                        className="radio-label"
-                      >
-                        <input 
-                          type="checkbox" 
-                          name="groupClients" 
-                          value={client.id}
-                          checked={selectedClients.has(client.id)}
-                          onChange={(e) => handleClientSelect(client.id, e.target.checked)}
-                        />
-                        <span>{client.name} ({client.ip_address})</span>
-                      </label>
-                    ))
-                  )}
-                </div>
-                <small className="form-help">그룹에 포함할 디스플레이 서버를 선택하세요. 한 클라이언트는 여러 그룹에 포함될 수 있습니다.</small>
-              </div>
-              
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>
-                  취소
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  저장
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <GroupModal
+          isOpen={showAddModal}
+          onClose={closeModal}
+          onSave={handleSaveGroup}
+          clients={clients}
+          initialData={editingGroup ? {
+            name: editingGroup.name,
+            description: editingGroup.description || '',
+            clientIds: (editingGroup.clients || []).map(client => client.id)
+          } : null}
+        />
       )}
     </div>
   );
