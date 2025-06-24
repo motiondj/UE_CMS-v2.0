@@ -30,6 +30,15 @@ function App() {
   const runningClients = clients.filter(c => c.status === 'running').length;
   const activeExecutions = executions.filter(e => e.status === 'running').length;
   const totalGroups = groups.length;
+  
+  // 실행 중인 프리셋 수 계산 (현재 실행 중인 클라이언트가 있는 프리셋)
+  const runningPresets = new Set();
+  clients.forEach(client => {
+    if (client.status === 'running' && client.current_preset_id) {
+      runningPresets.add(client.current_preset_id);
+    }
+  });
+  const totalRunningPresets = runningPresets.size;
 
   // Socket 연결
   useEffect(() => {
@@ -409,6 +418,8 @@ function App() {
           runningClients={runningClients}
           activeExecutions={activeExecutions}
           totalGroups={totalGroups}
+          totalRunningPresets={totalRunningPresets}
+          totalPresets={presets.length}
         />
         <div className="main-layout">
             <PresetSection 
