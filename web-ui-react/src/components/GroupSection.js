@@ -63,16 +63,19 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
   };
 
   const openAddModal = () => {
+    console.log('새 그룹 버튼 클릭됨');
     setEditingGroup(null);
     setShowAddModal(true);
   };
 
   const closeModal = () => {
+    console.log('모달 닫기');
     setShowAddModal(false);
     setEditingGroup(null);
   };
 
   const openEditModal = (group) => {
+    console.log('그룹 편집 버튼 클릭됨:', group);
     setEditingGroup(group);
     setShowAddModal(true);
   };
@@ -135,7 +138,12 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
         👥 디스플레이 서버 그룹
         <button 
           className="btn btn-secondary btn-with-text" 
-          onClick={openAddModal}
+          onClick={(e) => {
+            console.log('새 그룹 버튼 클릭 이벤트 발생');
+            e.preventDefault();
+            e.stopPropagation();
+            openAddModal();
+          }}
         >
           ➕ 새 그룹
         </button>
@@ -215,7 +223,12 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
                 <div className="group-actions">
                   <button
                     className="btn btn-secondary btn-bulk"
-                    onClick={() => openEditModal(group)}
+                    onClick={(e) => {
+                      console.log('편집 버튼 클릭 이벤트 발생:', group);
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openEditModal(group);
+                    }}
                     title="편집"
                   >
                     편집
@@ -241,11 +254,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
           onClose={closeModal}
           onSave={handleSaveGroup}
           clients={clients}
-          initialData={editingGroup ? {
-            name: editingGroup.name,
-            description: editingGroup.description || '',
-            clientIds: (editingGroup.clients || []).map(client => client.id)
-          } : null}
+          initialData={editingGroup}
         />
       )}
     </div>

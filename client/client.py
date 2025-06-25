@@ -12,7 +12,14 @@ import os
 import threading
 from datetime import datetime
 import logging
-import psutil
+
+# psutil을 선택적으로 import
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("⚠️ psutil 모듈을 사용할 수 없습니다. 기본 기능으로 실행됩니다.")
 
 # 로깅 설정
 logging.basicConfig(
@@ -55,6 +62,10 @@ class SwitchboardClient:
     
     def check_duplicate_process(self):
         """같은 이름의 클라이언트가 이미 실행 중인지 확인합니다."""
+        if not PSUTIL_AVAILABLE:
+            print("⚠️ psutil을 사용할 수 없어 중복 프로세스 확인을 건너뜁니다.")
+            return True
+            
         try:
             current_pid = os.getpid()
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -406,44 +417,50 @@ class SwitchboardClient:
     
     def check_process_status(self):
         """실행 중인 프로세스들의 상태를 확인합니다."""
+        if not PSUTIL_AVAILABLE:
+            return {'running': 0, 'crashed': 0}
+            
         try:
-            current_processes = {}
-            crashed_processes = []
+            running_count = 0
+            crashed_count = 0
             
             for process_name, process_info in self.running_processes.items():
                 try:
-                    # 프로세스가 살아있는지 확인
-                    proc = psutil.Process(process_info['pid'])
+                    pid = process_info['pid']
+                    proc = psutil.Process(pid)
+                    
                     if proc.is_running():
-                        current_processes[process_name] = process_info
+                        running_count += 1
+                        print(f"✅ {process_name} 실행 중 (PID: {pid})")
                     else:
-                        crashed_processes.append(process_name)
-                        print(f"⚠️ 프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
-                        logging.warning(f"프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
+                        crashed_count += 1
+                        print(f"⚠️ {process_name} 비정상 종료 (PID: {pid})")
+                        # 추적 목록에서 제거
+                        self.remove_running_process(process_name)
+                        
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    crashed_processes.append(process_name)
-                    print(f"⚠️ 프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
-                    logging.warning(f"프로세스 비정상 종료 감지: {process_name} (PID: {process_info['pid']})")
-            
-            # 비정상 종료된 프로세스들을 추적 목록에서 제거
-            for process_name in crashed_processes:
-                self.remove_running_process(process_name)
-            
-            # 현재 실행 중인 프로세스 목록 업데이트
-            self.running_processes = current_processes
+                    crashed_count += 1
+                    print(f"⚠️ {process_name} 프로세스 없음 (PID: {process_info.get('pid', 'Unknown')})")
+                    # 추적 목록에서 제거
+                    self.remove_running_process(process_name)
+                except Exception as e:
+                    print(f"⚠️ {process_name} 상태 확인 중 오류: {e}")
             
             return {
-                'running': list(current_processes.keys()),
-                'crashed': crashed_processes
+                'running': running_count,
+                'crashed': crashed_count
             }
             
         except Exception as e:
-            print(f"❌ 프로세스 상태 확인 실패: {e}")
-            logging.error(f"프로세스 상태 확인 실패: {e}")
-            return {'running': [], 'crashed': []}
+            print(f"❌ 프로세스 상태 확인 중 오류: {e}")
+            return {'running': 0, 'crashed': 0}
     
     def start_process_monitor(self):
         """프로세스 모니터링을 시작합니다."""
+        if not PSUTIL_AVAILABLE:
+            print("⚠️ psutil을 사용할 수 없어 프로세스 모니터링을 건너뜁니다.")
+            return
+            
         def monitor_loop():
             print(f"🔍 프로세스 모니터링 시작: {self.client_name}")
             logging.info(f"프로세스 모니터링 시작: {self.client_name}")
@@ -453,27 +470,25 @@ class SwitchboardClient:
                     # 프로세스 상태 확인
                     status = self.check_process_status()
                     
-                    # 서버에 프로세스 상태 전송
+                    # 상태 정보를 서버에 전송
                     if self.sio.connected:
                         self.sio.emit('process_status', {
-                            'clientName': self.client_name,
-                            'clientId': self.client_id,
-                            'runningProcesses': status['running'],
-                            'crashedProcesses': status['crashed'],
-                            'timestamp': datetime.now().isoformat()
+                            'name': self.client_name,
+                            'status': status
                         })
                     
-                    time.sleep(10)  # 10초마다 체크
+                    # 10초마다 확인
+                    time.sleep(10)
                     
                 except Exception as e:
-                    print(f"❌ 프로세스 모니터링 오류: {e}")
-                    logging.error(f"프로세스 모니터링 오류: {e}")
+                    print(f"⚠️ 프로세스 모니터링 중 오류: {e}")
                     time.sleep(10)
         
-        # 프로세스 모니터링 스레드 시작
+        # 별도 스레드에서 모니터링 실행
         self.process_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
         self.process_monitor_thread.start()
         print(f"✅ 프로세스 모니터링 스레드 시작: {self.client_name}")
+        logging.info(f"프로세스 모니터링 스레드 시작: {self.client_name}")
     
     def stop_running_processes(self):
         """실행 중인 프로세스들을 정지합니다."""
@@ -481,33 +496,32 @@ class SwitchboardClient:
             print("🛑 실행 중인 프로세스 정지 시작")
             
             # Windows에서 실행 중인 Unreal Engine 프로세스 찾기 및 정지
-            import psutil
-            
-            # Unreal Engine 관련 프로세스 이름들
-            target_processes = [
-                'MyProject.exe',
-                'UnrealEditor.exe',
-                'UE4Editor.exe',
-                'UE5Editor.exe'
-            ]
-            
-            stopped_count = 0
-            
-            for proc in psutil.process_iter(['pid', 'name']):
-                try:
-                    if proc.info['name'] in target_processes:
-                        print(f"🛑 프로세스 정지: {proc.info['name']} (PID: {proc.info['pid']})")
-                        proc.terminate()
-                        stopped_count += 1
-                        
-                        # 추적 목록에서도 제거
-                        self.remove_running_process(proc.info['name'])
-                        
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-            
-            print(f"✅ 프로세스 정지 완료: {stopped_count}개 프로세스")
-            return stopped_count
+            if PSUTIL_AVAILABLE:
+                # Unreal Engine 관련 프로세스 이름들
+                target_processes = [
+                    'MyProject.exe',
+                    'UnrealEditor.exe',
+                    'UE4Editor.exe',
+                    'UE5Editor.exe'
+                ]
+                
+                stopped_count = 0
+                
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        if proc.info['name'] in target_processes:
+                            print(f"🛑 프로세스 정지: {proc.info['name']} (PID: {proc.info['pid']})")
+                            proc.terminate()
+                            stopped_count += 1
+                            
+                            # 추적 목록에서도 제거
+                            self.remove_running_process(proc.info['name'])
+                            
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+                
+                print(f"✅ 프로세스 정지 완료: {stopped_count}개 프로세스")
+                return stopped_count
             
         except Exception as e:
             print(f"❌ 프로세스 정지 중 오류: {e}")
@@ -669,11 +683,14 @@ def main():
     
     args = parser.parse_args()
     
+    # 환경 변수에서 서버 URL 가져오기 (우선순위)
+    server_url = os.environ.get('SWITCHBOARD_SERVER_URL', args.server)
+    
     try:
-        print(f"서버: {args.server}")
+        print(f"서버: {server_url}")
         
         client = SwitchboardClient(
-            server_url=args.server
+            server_url=server_url
         )
         
         print(f"컴퓨터 이름: {client.client_name}")

@@ -13,16 +13,10 @@ const GroupModal = ({ isOpen, onClose, onSave, clients, initialData }) => {
       setFormData({
         name: initialData.name || '',
         description: initialData.description || '',
-        clientIds: initialData.clientIds || []
-      });
-    } else {
-      setFormData({
-        name: '',
-        description: '',
-        clientIds: []
+        clientIds: (initialData.clients || initialData.clientIds || []).map(c => typeof c === 'object' ? c.id : c)
       });
     }
-  }, [initialData, isOpen]);
+  }, [initialData]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -62,11 +56,11 @@ const GroupModal = ({ isOpen, onClose, onSave, clients, initialData }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
+    <div className="modal" style={{ display: 'flex' }}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2 className="modal-title">{initialData ? '그룹 수정' : '그룹 추가'}</h2>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <button className="close" onClick={onClose}>×</button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="form-group">
