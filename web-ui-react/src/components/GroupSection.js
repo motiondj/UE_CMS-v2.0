@@ -199,7 +199,7 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
             const clientTags = (group.clients || []).map(client => {
               return (
                 <span key={client.id} className="client-tag">
-                  {client.name} ({client.ip_address})
+                  {client.ip_address}
                 </span>
               );
             });

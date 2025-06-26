@@ -821,6 +821,24 @@ app.post('/api/presets/:id/stop', (req, res) => {
             presetId: preset.id
           });
           console.log(`📤 클라이언트 ${client.name}에 정지 명령 전송`);
+          
+          // 클라이언트 상태를 online으로 업데이트하고 current_preset_id를 NULL로 설정
+          db.run(
+            'UPDATE clients SET status = "online", current_preset_id = NULL WHERE id = ?',
+            [client.id],
+            (err) => {
+              if (!err) {
+                console.log(`🔄 클라이언트 ${client.name} 상태를 online으로 업데이트 (프리셋 정지)`);
+                io.emit('client_status_changed', { 
+                  name: client.name, 
+                  status: 'online',
+                  current_preset_id: null,
+                  reason: '프리셋 정지'
+                });
+              }
+            }
+          );
+          
           stopResults.push({
             clientId: client.id,
             clientName: client.name,
@@ -959,98 +977,62 @@ app.get('/api/presets/:id/status', (req, res) => {
       }
       
       // 각 클라이언트의 상태 판정
-      const clientStatuses = [];
-      let hasOfflineClient = false;
-      let hasRunningClient = false;
-      let hasCrashedClient = false;
+      let runningCount = 0;
+      let onlineCount = 0;
+      let offlineCount = 0;
+      let totalCount = clients.length;
       
       clients.forEach(client => {
-        let status = 'ready'; // 기본값: 파랑 (실행 대기)
-        let statusCode = 'blue';
-        let reason = '프리셋에 등록된 온라인 클라이언트';
-        
-        // 1. 오프라인 체크 (노랑)
-        if (client.status === 'offline') {
-          status = 'warning';
-          statusCode = 'yellow';
-          reason = '오프라인 상태';
-          hasOfflineClient = true;
+        if (client.status === 'running' && client.current_preset_id == id) {
+          runningCount++;
+        } else if (client.status === 'online') {
+          onlineCount++;
+        } else {
+          offlineCount++;
         }
-        // 2. 현재 프리셋 실행 중 체크 (초록) - 정확한 프리셋 확인
-        else if (client.status === 'running' && client.current_preset_id === preset.id) {
-          status = 'running';
-          statusCode = 'green';
-          reason = '현재 프리셋 실행 중';
-          hasRunningClient = true;
-        }
-        // 3. 다른 프리셋 실행 중 체크 (파랑) - 다른 프리셋이 실행 중
-        else if (client.status === 'running' && client.current_preset_id !== preset.id) {
-          status = 'ready';
-          statusCode = 'blue';
-          reason = '다른 프리셋 실행 중';
-        }
-        // 4. 비정상 종료 체크 (빨강)
-        else if (client.status === 'crashed') {
-          status = 'crashed';
-          statusCode = 'red';
-          reason = '비정상 종료';
-          hasCrashedClient = true;
-        }
-        // 5. 온라인 상태 (파랑)
-        else if (client.status === 'online') {
-          status = 'ready';
-          statusCode = 'blue';
-          reason = '실행 대기';
-        }
-        
-        clientStatuses.push({
-          clientId: client.id,
-          clientName: client.name,
-          status: status,
-          statusCode: statusCode,
-          reason: reason,
-          originalStatus: client.status,
-          currentPresetId: client.current_preset_id
-        });
       });
       
-      // 전체 프리셋 상태 판정
-      let overallStatus = 'ready';
-      let overallStatusCode = 'blue';
-      let overallReason = '모든 클라이언트가 실행 대기 상태';
+      // 프리셋 상태 판정
+      let status = 'stopped'; // 기본값
+      let statusColor = 'gray';
       
-      if (hasCrashedClient) {
-        overallStatus = 'crashed';
-        overallStatusCode = 'red';
-        overallReason = '비정상 종료된 클라이언트가 있음';
-      } else if (hasRunningClient) {
-        overallStatus = 'running';
-        overallStatusCode = 'green';
-        overallReason = '실행 중인 클라이언트가 있음';
-      } else if (hasOfflineClient) {
-        overallStatus = 'warning';
-        overallStatusCode = 'yellow';
-        overallReason = '오프라인 클라이언트가 있음';
+      if (runningCount > 0) {
+        if (runningCount === totalCount) {
+          status = 'running';
+          statusColor = 'green';
+        } else {
+          status = 'partial';
+          statusColor = 'yellow';
+        }
+      } else if (offlineCount === totalCount) {
+        status = 'offline';
+        statusColor = 'red';
+      } else if (onlineCount > 0) {
+        status = 'ready';
+        statusColor = 'blue';
       }
       
       const responseData = {
-        presetId: preset.id,
+        presetId: id,
         presetName: preset.name,
-        overallStatus: overallStatus,
-        overallStatusCode: overallStatusCode,
-        overallReason: overallReason,
-        clients: clientStatuses,
+        status: status,
+        statusColor: statusColor,
         summary: {
-          total: clients.length,
-          ready: clientStatuses.filter(c => c.status === 'ready').length,
-          running: clientStatuses.filter(c => c.status === 'running').length,
-          warning: clientStatuses.filter(c => c.status === 'warning').length,
-          crashed: clientStatuses.filter(c => c.status === 'crashed').length
-        }
+          total: totalCount,
+          running: runningCount,
+          online: onlineCount,
+          offline: offlineCount
+        },
+        clients: clients.map(client => ({
+          id: client.id,
+          name: client.name,
+          status: client.status,
+          current_preset_id: client.current_preset_id,
+          isRunningThisPreset: client.status === 'running' && client.current_preset_id == id
+        }))
       };
       
-      console.log(`✅ 프리셋 상태 판정 완료: ${preset.name} - ${overallStatus} (${overallStatusCode})`);
-      
+      console.log(`✅ 프리셋 상태 판정 완료: ${preset.name} -> ${status} (${runningCount}/${totalCount})`);
       res.json(responseData);
     });
   });
@@ -1160,12 +1142,15 @@ io.on('connection', (socket) => {
   
   // 하트비트 응답
   socket.on('heartbeat', (data) => {
-    const { name } = data;
+    const { name, status, running_process_count, running_processes, timestamp } = data;
     const now = new Date().toISOString();
     const timeStr = new Date().toLocaleTimeString();
     const clientIP = normalizeIP(socket.handshake.address || '127.0.0.1');
     
     console.log(`💓 하트비트 수신: ${name} (IP: ${clientIP}, 시간: ${timeStr}, 소켓 ID: ${socket.id})`);
+    if (status) {
+      console.log(`📊 클라이언트 상태: ${status} (실행 중 프로세스: ${running_process_count || 0}개)`);
+    }
     
     // 먼저 클라이언트가 데이터베이스에 있는지 확인
     db.get('SELECT * FROM clients WHERE name = ?', [name], (err, existingClient) => {
@@ -1178,12 +1163,28 @@ io.on('connection', (socket) => {
         // 기존 클라이언트가 있으면 상태 업데이트
         console.log(`✅ 기존 클라이언트 발견: ${name} (ID: ${existingClient.id}, 상태: ${existingClient.status})`);
         
+        // 상태 정보가 있으면 업데이트
+        const updateStatus = status || 'online';
+        const updateData = [updateStatus, now, name];
+        
         db.run(
           'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
-          ['online', now, name],
+          updateData,
           (err) => {
             if (!err) {
-              console.log(`💓 하트비트 업데이트 완료: ${name} (시간: ${timeStr})`);
+              console.log(`💓 하트비트 업데이트 완료: ${name} (상태: ${updateStatus}, 시간: ${timeStr})`);
+              
+              // 상태가 변경되었으면 이벤트 전송
+              if (existingClient.status !== updateStatus) {
+                io.emit('client_status_changed', { 
+                  id: existingClient.id,
+                  name: name, 
+                  status: updateStatus,
+                  running_process_count: running_process_count || 0,
+                  running_processes: running_processes || []
+                });
+                console.log(`📡 클라이언트 상태 변경 이벤트 전송: ${name} -> ${updateStatus}`);
+              }
             } else {
               console.error(`❌ 하트비트 업데이트 실패: ${name} - ${err.message}`);
             }
@@ -1221,6 +1222,46 @@ io.on('connection', (socket) => {
               console.log(`📡 클라이언트 추가 이벤트 전송 완료: ${name}`);
             } else {
               console.error(`❌ 삭제된 클라이언트 자동 재등록 실패: ${name} - ${err.message}`);
+            }
+          }
+        );
+      }
+    });
+  });
+  
+  // 현재 프로세스 상태 수신
+  socket.on('current_process_status', (data) => {
+    const { clientName, clientId, running_process_count, running_processes, status, timestamp } = data;
+    console.log(`📊 현재 프로세스 상태 수신: ${clientName} (${running_process_count}개 실행 중)`);
+    
+    // 클라이언트 상태 업데이트
+    db.get('SELECT * FROM clients WHERE name = ?', [clientName], (err, client) => {
+      if (err) {
+        console.error(`❌ 클라이언트 조회 실패: ${clientName} - ${err.message}`);
+        return;
+      }
+      
+      if (client) {
+        // 실행 중인 프로세스가 있으면 running 상태로, 없으면 online 상태로 설정
+        const newStatus = running_process_count > 0 ? 'running' : 'online';
+        
+        db.run(
+          'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
+          [newStatus, clientName],
+          (err) => {
+            if (!err) {
+              console.log(`✅ 클라이언트 상태 업데이트: ${clientName} -> ${newStatus} (${running_process_count}개 프로세스)`);
+              
+              // 상태 변경 이벤트 전송
+              io.emit('client_status_changed', {
+                id: client.id,
+                name: clientName,
+                status: newStatus,
+                running_process_count: running_process_count,
+                running_processes: running_processes
+              });
+            } else {
+              console.error(`❌ 클라이언트 상태 업데이트 실패: ${clientName} - ${err.message}`);
             }
           }
         );
@@ -1308,8 +1349,6 @@ io.on('connection', (socket) => {
             if (!err) {
               console.log(`🔄 ${socket.clientName} 즉시 오프라인으로 변경`);
               io.emit('client_status_changed', { name: socket.clientName, status: 'offline' });
-            } else {
-              console.error(`❌ ${socket.clientName} 오프라인 처리 실패: ${err.message}`);
             }
           }
         );
@@ -1404,6 +1443,31 @@ io.on('connection', (socket) => {
       clientStatus: newClientStatus
     });
   });
+
+  // 정지 결과 수신
+  socket.on('stop_result', (data) => {
+    const { clientName, clientId, presetId, stoppedPresetId, result, timestamp } = data;
+    console.log(`🛑 정지 결과 수신: ${clientName} - ${result.success ? '성공' : '실패'}`);
+    
+    // 클라이언트 상태를 online으로 변경하고 current_preset_id를 NULL로 설정
+    if (clientName) {
+      db.run(
+        'UPDATE clients SET status = "online", current_preset_id = NULL WHERE name = ?',
+        [clientName],
+        (err) => {
+          if (!err) {
+            console.log(`🔄 클라이언트 상태 변경: ${clientName} -> online (프리셋 정지 완료)`);
+            io.emit('client_status_changed', { 
+              name: clientName, 
+              status: 'online',
+              current_preset_id: null,
+              reason: '프리셋 정지 완료'
+            });
+          }
+        }
+      );
+    }
+  });
 });
 
 // 서버 주도적 클라이언트 연결 확인 (15초마다)
@@ -1433,7 +1497,7 @@ setInterval(() => {
           [client.name],
           (err) => {
             if (!err) {
-              console.log(`🔄 ${client.name} 오프라인으로 변경`);
+              console.log(`🔄 ${client.name} 즉시 오프라인으로 변경`);
               io.emit('client_status_changed', { name: client.name, status: 'offline' });
             }
           }

@@ -39,6 +39,7 @@ class SwitchboardClient:
         self.client_id = None
         self.sio = socketio.Client()
         self.running = False
+        self.current_preset_id = None  # 현재 실행 중인 프리셋 ID
         
         # 프로세스 모니터링을 위한 변수들 추가
         self.running_processes = {}  # {process_name: {'pid': pid, 'command': command, 'start_time': timestamp}}
@@ -176,8 +177,43 @@ class SwitchboardClient:
         })
         print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
         
+        # 현재 실행 중인 프로세스 정보를 서버에 전송
+        self.send_current_process_status()
+        
         self.start_heartbeat()
         self.start_process_monitor()  # 프로세스 모니터링 시작
+    
+    def send_current_process_status(self):
+        """현재 실행 중인 프로세스 정보를 서버에 전송합니다."""
+        try:
+            # 현재 실행 중인 프로세스 정보 수집
+            process_status = self.check_process_status()
+            running_processes = []
+            
+            for process_name, process_info in self.running_processes.items():
+                running_processes.append({
+                    'name': process_name,
+                    'pid': process_info['pid'],
+                    'command': process_info['command'],
+                    'start_time': process_info['start_time']
+                })
+            
+            # 서버에 현재 상태 전송
+            self.sio.emit('current_process_status', {
+                'clientName': self.client_name,
+                'clientId': self.client_id,
+                'running_process_count': len(self.running_processes),
+                'running_processes': running_processes,
+                'status': 'running' if len(self.running_processes) > 0 else 'online',
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            print(f"📊 현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
+            logging.info(f"현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
+            
+        except Exception as e:
+            print(f"❌ 프로세스 상태 전송 실패: {e}")
+            logging.error(f"프로세스 상태 전송 실패: {e}")
     
     def on_disconnect(self):
         """Socket.io 연결 해제 시 호출됩니다."""
@@ -203,8 +239,17 @@ class SwitchboardClient:
                     # 하트비트 전송 (연결 상태와 관계없이 시도)
                     try:
                         print(f"📤 하트비트 전송 중: {self.client_name} -> 서버")
+                        
+                        # 클라이언트 상태 정보 수집
+                        running_process_count = len(self.running_processes)
+                        status = "콘텐츠 실행 중" if running_process_count > 0 else "실행 중"
+                        
                         self.sio.emit('heartbeat', {
-                            'name': self.client_name
+                            'name': self.client_name,
+                            'status': status,
+                            'running_process_count': running_process_count,
+                            'running_processes': list(self.running_processes.keys()),
+                            'timestamp': datetime.now().isoformat()
                         })
                         print(f"💓 하트비트 전송 완료 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
                         logging.info(f"하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
@@ -269,6 +314,11 @@ class SwitchboardClient:
             def execute_command_async():
                 try:
                     print(f"🚀 명령어 실행 시작: {command}")
+                    
+                    # 프리셋 ID 저장
+                    self.current_preset_id = preset_id
+                    print(f"📝 현재 프리셋 ID 설정: {preset_id}")
+                    
                     result = self.execute_command(command)
                     print(f"✅ 명령어 실행 완료: {result}")
                     
@@ -288,6 +338,9 @@ class SwitchboardClient:
                     error_msg = f"명령 실행 중 오류: {e}"
                     logging.error(error_msg)
                     print(f"❌ {error_msg}")
+                    
+                    # 오류 시 프리셋 ID 초기화
+                    self.current_preset_id = None
                     
                     self.sio.emit('execution_result', {
                         'executionId': data.get('executionId'),
@@ -364,11 +417,17 @@ class SwitchboardClient:
             # 실행 중인 프로세스 정지
             self.stop_running_processes()
             
+            # 프리셋 ID 초기화
+            stopped_preset_id = self.current_preset_id
+            self.current_preset_id = None
+            print(f"📝 프리셋 ID 초기화: {stopped_preset_id} -> None")
+            
             # 정지 결과를 서버에 전송
             self.sio.emit('stop_result', {
                 'clientId': self.client_id,
                 'clientName': self.client_name,
                 'presetId': preset_id,
+                'stoppedPresetId': stopped_preset_id,
                 'result': {'success': True, 'message': '프로세스 정지 완료'},
                 'timestamp': datetime.now().isoformat()
             })

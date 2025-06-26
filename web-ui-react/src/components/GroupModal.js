@@ -7,16 +7,28 @@ const GroupModal = ({ isOpen, onClose, onSave, clients, initialData }) => {
     clientIds: []
   });
   const [loading, setLoading] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
-    if (initialData) {
-      setFormData({
-        name: initialData.name || '',
-        description: initialData.description || '',
-        clientIds: (initialData.clients || initialData.clientIds || []).map(c => typeof c === 'object' ? c.id : c)
-      });
+    if (isOpen && !isInitialized) {
+      if (initialData) {
+        setFormData({
+          name: initialData.name || '',
+          description: initialData.description || '',
+          clientIds: (initialData.clients || initialData.clientIds || []).map(c => typeof c === 'object' ? c.id : c)
+        });
+      } else {
+        setFormData({
+          name: '',
+          description: '',
+          clientIds: []
+        });
+      }
+      setIsInitialized(true);
+    } else if (!isOpen) {
+      setIsInitialized(false);
     }
-  }, [initialData]);
+  }, [isOpen, isInitialized, initialData]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;

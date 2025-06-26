@@ -298,6 +298,27 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
   const isAllSelected = (presets || []).length > 0 && selectedPresets.size === (presets || []).length;
   const selectedGroup = safeGroups.find(g => g.id === formData.target_group_id);
 
+  // 프리셋이 실행 중인지 확인하는 함수
+  const isPresetRunning = (preset) => {
+    if (!clients || !preset.target_group_id) return false;
+    
+    // 해당 그룹의 클라이언트들 중에서 현재 이 프리셋이 실행 중인 클라이언트가 있는지 확인
+    const groupClients = clients.filter(client => {
+      // 클라이언트가 어떤 그룹에 속하는지 확인
+      return groups.some(group => 
+        group.id === preset.target_group_id && 
+        group.clients && 
+        group.clients.some(gc => gc.id === client.id)
+      );
+    });
+    
+    // 현재 프리셋이 실행 중인 클라이언트가 있는지 확인
+    return groupClients.some(client => 
+      client.current_preset_id === preset.id && 
+      (client.status === 'running' || client.status === '콘텐츠 실행 중')
+    );
+  };
+
   return (
     <div className="section">
       <h2 className="section-title">
@@ -337,7 +358,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
               presets.map(preset => {
                   const group = safeGroups.find(g => g.id === preset.target_group_id);
                   const clientCount = group ? (group.clients || []).length : 0;
-                  const isRunning = runningPresets.has(preset.id);
+                  const isRunning = isPresetRunning(preset);
                   const presetStatus = presetStatuses.get(preset.id);
                   
                   return (

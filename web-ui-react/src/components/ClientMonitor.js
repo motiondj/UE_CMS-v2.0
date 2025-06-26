@@ -112,6 +112,9 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
   const getStatusIndicator = (status) => {
     let color;
     switch (status) {
+      case '콘텐츠 실행 중':
+        color = '#22c55e'; // green
+        break;
       case 'running':
         color = '#22c55e'; // green
         break;
@@ -179,6 +182,12 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 <div className="client-details">
                   <span className="client-name">{client.name}</span>
                   <span className="client-ip">{client.ip_address}</span>
+                  <span className="client-status">
+                    {client.status}
+                    {client.running_process_count > 0 && (
+                      <span className="process-count"> ({client.running_process_count}개 실행 중)</span>
+                    )}
+                  </span>
                 </div>
               </div>
 

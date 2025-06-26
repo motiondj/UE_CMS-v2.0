@@ -79,6 +79,23 @@
     color: var(--text-muted);
 }
 
+.client-status {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.process-count {
+    color: #22c55e;
+    font-weight: 500;
+}
+
+/* 콘텐츠 실행 중 상태를 위한 특별한 스타일 */
+.client-item-card.콘텐츠\ 실행\ 중 {
+    border-left: 4px solid #22c55e;
+    background-color: rgba(34, 197, 94, 0.05);
+}
+
 .execution-id-badge {
     position: absolute;
     top: -8px;
