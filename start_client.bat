@@ -14,7 +14,8 @@ echo To stop the client, press Ctrl+C in this window.
 echo.
 
 cd client
-C:\Users\motiondjHome\AppData\Local\Programs\Python\Python311\python.exe client.py
+call venv\Scripts\activate.bat
+python client_tray.py
 
 echo.
 echo Client has been stopped.
