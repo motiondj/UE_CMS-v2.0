@@ -20,18 +20,19 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 데이터베이스 초기화
-const db = new sqlite3.Database('./switchboard.db', (err) => {
+const db = new sqlite3.Database('./ue_cms.db', (err) => {
   if (err) {
     console.error('데이터베이스 연결 오류:', err.message);
   } else {
     console.log('SQLite 데이터베이스에 연결되었습니다.');
-    initializeDatabase();
-    checkDatabaseIntegrity();
+    initializeDatabase(() => {
+      checkDatabaseIntegrity();
+    });
   }
 });
 
 // 데이터베이스 테이블 초기화
-function initializeDatabase() {
+function initializeDatabase(callback) {
   const tables = [
     `CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,10 +86,18 @@ function initializeDatabase() {
     )`
   ];
 
+  let completed = 0;
+  const totalTables = tables.length;
+
   tables.forEach(table => {
     db.run(table, (err) => {
       if (err) {
         console.error('테이블 생성 오류:', err.message);
+      }
+      completed++;
+      if (completed === totalTables) {
+        console.log('✅ 데이터베이스 테이블 초기화 완료');
+        if (callback) callback();
       }
     });
   });
@@ -143,7 +152,7 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    server: 'Switchboard Plus Server v2.0'
+    server: 'UE CMS Server v2.0'
   });
 });
 
@@ -1570,7 +1579,7 @@ app.get('/', (req, res) => {
 // 서버 시작
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {
-  console.log(`🚀 Switchboard Plus Server가 포트 ${PORT}에서 실행 중입니다.`);
+  console.log(`🚀 UE CMS Server가 포트 ${PORT}에서 실행 중입니다.`);
   console.log(`📱 웹 인터페이스: http://localhost:${PORT}`);
 });
 

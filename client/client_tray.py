@@ -123,7 +123,7 @@ class SyncChecker:
             self.SyncStatus.UNKNOWN: "Unknown"
         }.get(status, "Unknown")
 
-class SwitchboardTrayClient:
+class UECMSTrayClient:
     def __init__(self, server_url="http://localhost:8000"):
         self.server_url = server_url
         self.client_name = self.get_computer_name()
@@ -146,8 +146,8 @@ class SwitchboardTrayClient:
         
         # 중복 실행 방지를 위한 프로세스 확인
         if not self.check_duplicate_process():
-            print(f"❌ 이미 실행 중인 클라이언트가 있습니다. (이름: {self.client_name})")
-            logging.error(f"이미 실행 중인 클라이언트가 있습니다. (이름: {self.client_name})")
+            print(f"❌ 이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
+            logging.error(f"이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
             sys.exit(1)
         
         # Socket.io 이벤트 핸들러 등록
@@ -158,44 +158,85 @@ class SwitchboardTrayClient:
         self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('stop_command', self.on_stop_command)
         
-        logging.info(f"클라이언트 초기화 완료: {self.client_name}")
+        logging.info(f"UE CMS 클라이언트 초기화 완료: {self.client_name}")
     
     def check_duplicate_process(self):
-        """같은 이름의 클라이언트가 이미 실행 중인지 정확하게 확인합니다."""
+        # 강제 실행 옵션 체크
+        if os.environ.get('UECMS_FORCE_RUN', '0') == '1':
+            print("⚠️ 중복 체크 무시(강제 실행)")
+            return True
+            
         try:
             import psutil
-            current_pid = os.getpid()
-            current_script = os.path.abspath(sys.argv[0])
-            current_proc = psutil.Process(current_pid)
-            current_cmdline = current_proc.cmdline() if current_proc.cmdline() else []
-            
-            print(f"DEBUG: 현재 프로세스 - PID={current_pid}, cmdline={current_cmdline}")
-            
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    print(f"DEBUG: PID={proc.info['pid']}, name={proc.info['name']}, cmdline={proc.info['cmdline']}")
-                    if proc.info['pid'] == current_pid:
-                        print(f"DEBUG: 자기 자신 프로세스 발견 - PID {current_pid}")
-                        continue
-                    if proc.info['name'] and 'python' in proc.info['name'].lower():
-                        cmdline = proc.info['cmdline']
-                        if not cmdline or len(cmdline) < 2:
-                            continue
-                        target_script = os.path.abspath(cmdline[1])
-                        # 현재 프로세스와 정확히 같은 스크립트를 실행하는지 확인
-                        if (target_script == current_script and 
-                            proc.is_running() and 
-                            cmdline == current_cmdline):
-                            print(f"⚠️ 다른 클라이언트 프로세스 발견: PID {proc.info['pid']} ({target_script})")
-                            return False
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                    continue
-            return True
+            # 패키징된 실행 파일인지 확인
+            if getattr(sys, 'frozen', False):
+                return self.check_duplicate_packaged()
+            else:
+                return self.check_duplicate_development()
         except ImportError:
             print("⚠️ psutil을 사용할 수 없어 중복 프로세스 확인을 건너뜁니다.")
             return True
         except Exception as e:
             print(f"⚠️ 프로세스 확인 중 오류: {e}")
+            return True
+    
+    def check_duplicate_packaged(self):
+        """패키징된 실행 파일용 중복 체크"""
+        try:
+            import psutil
+            current_pid = os.getpid()
+            current_exe = os.path.basename(sys.executable)
+            print(f"🔍 패키징된 실행 파일 - PID: {current_pid}, 실행파일: {current_exe}")
+            
+            duplicate_found = False
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['pid'] == current_pid:
+                        continue
+                    if proc.info['name'] == current_exe and proc.is_running():
+                        print(f"⚠️ 같은 실행 파일이 이미 실행 중: PID {proc.info['pid']}")
+                        duplicate_found = True
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            
+            if not duplicate_found:
+                print("✅ 중복 프로세스가 발견되지 않았습니다.")
+            
+            return not duplicate_found
+        except Exception as e:
+            print(f"⚠️ 패키징된 실행 파일 중복 체크 중 오류: {e}")
+            return True
+    
+    def check_duplicate_development(self):
+        """개발 환경용 중복 체크"""
+        try:
+            import psutil
+            current_pid = os.getpid()
+            current_script = os.path.basename(sys.argv[0]).lower()
+            current_proc = psutil.Process(current_pid)
+            current_cmdline = current_proc.cmdline() if current_proc.cmdline() else []
+
+            print(f"DEBUG: 개발 환경 - PID={current_pid}, 스크립트={current_script}, cmdline={current_cmdline}")
+
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['pid'] == current_pid:
+                        continue
+                    if proc.info['name'] and 'python' in proc.info['name'].lower():
+                        cmdline = proc.info['cmdline']
+                        if not cmdline or len(cmdline) < 2:
+                            continue
+                        proc_script = os.path.basename(cmdline[1]).lower()
+                        # 현재 프로세스와 정확히 같은 스크립트를 실행하는지 확인
+                        if (proc_script == current_script and proc.is_running()):
+                            print(f"⚠️ 같은 스크립트가 이미 실행 중: PID {proc.info['pid']} ({proc_script})")
+                            return False
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
+                    continue
+            return True
+        except Exception as e:
+            print(f"⚠️ 개발 환경 중복 체크 중 오류: {e}")
             return True
     
     def get_computer_name(self):
@@ -237,46 +278,30 @@ class SwitchboardTrayClient:
     def create_tray_icon(self):
         """트레이 아이콘을 생성합니다."""
         if not PYTRAY_AVAILABLE:
-            print("⚠️ pystray를 사용할 수 없어 트레이 아이콘을 생성하지 않습니다.")
+            print("⚠️ pystray를 사용할 수 없어 트레이 아이콘을 생성할 수 없습니다.")
             return
         
-        # 상태에 따른 아이콘 색상
-        sync_status = self.get_sync_status()
-        if sync_status == SyncChecker.SyncStatus.MASTER:
-            icon_color = (0, 255, 0, 255)  # 초록색 (마스터)
-        elif sync_status == SyncChecker.SyncStatus.SLAVE:
-            icon_color = (255, 255, 0, 255)  # 노란색 (슬레이브)
-        elif sync_status == SyncChecker.SyncStatus.ERROR:
-            icon_color = (255, 0, 0, 255)  # 빨간색 (에러)
-        else:
-            icon_color = (128, 128, 128, 255)  # 회색 (알 수 없음)
+        # 기본 아이콘 이미지 생성 (녹색)
+        icon_image = self.create_icon_image('green')
         
-        icon_image = self.create_icon_image(icon_color)
-        if not icon_image:
-            return
-        
-        # 컨텍스트 메뉴 생성
+        # 메뉴 생성
         menu = pystray.Menu(
-            pystray.MenuItem(f"Switchboard: {self.client_name}", lambda: None, enabled=False),
-            pystray.MenuItem(f"Sync 상태: {self.sync_checker.get_status_text(sync_status)}", lambda: None, enabled=False),
-            pystray.MenuItem(f"프로세스: {len(self.running_processes)}개 실행 중", lambda: None, enabled=False),
-            pystray.Menu.SEPARATOR,
             pystray.MenuItem("상태 정보", self.show_status_info),
-            pystray.MenuItem("리프레시", self.refresh_status),
+            pystray.MenuItem("새로고침", self.refresh_status),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("종료", self.stop_client)
         )
         
         # 트레이 아이콘 생성
         self.icon = pystray.Icon(
-            "switchboard_tray",
+            "ue_cms_client",
             icon_image,
-            f"Switchboard Plus v2.0 - {self.client_name}",
+            "UE CMS Client",
             menu
         )
         
-        # 더블클릭 이벤트
-        self.icon.on_click = self.on_icon_click
+        print("✅ 트레이 아이콘이 생성되었습니다.")
+        logging.info("트레이 아이콘이 생성되었습니다.")
     
     def on_icon_click(self, icon, event):
         """트레이 아이콘 클릭 시 호출됩니다."""
@@ -288,7 +313,7 @@ class SwitchboardTrayClient:
         sync_status = self.get_sync_status()
         status_text = self.sync_checker.get_status_text(sync_status)
         
-        info = f"""Switchboard Plus v2.0 클라이언트
+        info = f"""UE CMS Client
 
 클라이언트: {self.client_name}
 서버: {self.server_url}
@@ -299,7 +324,7 @@ class SwitchboardTrayClient:
         # tkinter 창 생성
         root = tk.Tk()
         root.withdraw()  # 메인 창 숨기기
-        messagebox.showinfo("Switchboard 상태", info)
+        messagebox.showinfo("UE CMS Client Status", info)
         root.destroy()
     
     def refresh_status(self):
@@ -965,7 +990,7 @@ class SwitchboardTrayClient:
 def main():
     """메인 함수"""
     print("=" * 50)
-    print(" Launching Switchboard Plus v2.0 Client with Tray Icon")
+    print(" Launching UE CMS Client with Tray Icon")
     print("=" * 50)
     
     # 서버 URL 설정
@@ -980,7 +1005,7 @@ def main():
     
     try:
         # 클라이언트 생성 및 시작
-        client = SwitchboardTrayClient(server_url)
+        client = UECMSTrayClient(server_url)
         client.start()
     except KeyboardInterrupt:
         print("\n🛑 사용자에 의해 종료됨")

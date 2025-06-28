@@ -1,30 +1,30 @@
 {
-  "name": "switchboard-plus-server",
+  "name": "ue-cms-server",
   "version": "2.0.0",
-  "description": "Switchboard Plus v2.0 Server for nDisplay Control",
+  "description": "UE CMS v2.0 Server for nDisplay Control",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "build": "echo 'No build step required for Node.js server'"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "ue-cms",
+    "ndisplay",
+    "control",
+    "server",
+    "socket.io"
+  ],
+  "author": "UE CMS Team",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2",
     "sqlite3": "^5.1.6",
     "cors": "^2.8.5",
-    "path": "^0.12.7"
+    "body-parser": "^1.20.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
-  },
-  "keywords": [
-    "switchboard",
-    "ndisplay",
-    "unreal",
-    "control",
-    "websocket"
-  ],
-  "author": "Switchboard Plus Team",
-  "license": "MIT"
+  }
 } 

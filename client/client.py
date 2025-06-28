@@ -12,6 +12,7 @@ import os
 import threading
 from datetime import datetime
 import logging
+import argparse
 
 # psutil을 선택적으로 import
 try:
@@ -31,7 +32,7 @@ logging.basicConfig(
     ]
 )
 
-class SwitchboardClient:
+class UECMSClient:
     def __init__(self, server_url="http://localhost:8000", client_name=None):
         self.server_url = server_url
         # 컴퓨터의 실제 호스트명을 사용 (사용자 지정 무시)
@@ -62,33 +63,82 @@ class SwitchboardClient:
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
     
     def check_duplicate_process(self):
-        """같은 이름의 클라이언트가 이미 실행 중인지 확인합니다."""
+        # 강제 실행 옵션 체크
+        if os.environ.get('UECMS_FORCE_RUN', '0') == '1':
+            print("⚠️ 중복 체크 무시(강제 실행)")
+            return True
+            
         if not PSUTIL_AVAILABLE:
             print("⚠️ psutil을 사용할 수 없어 중복 프로세스 확인을 건너뜁니다.")
             return True
-            
+
         try:
-            current_pid = os.getpid()
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    # 현재 프로세스는 제외
-                    if proc.info['pid'] == current_pid:
-                        continue
-                    
-                    # Python 프로세스인지 확인
-                    if proc.info['name'] and 'python' in proc.info['name'].lower():
-                        cmdline = proc.info['cmdline']
-                        if cmdline and len(cmdline) > 1:
-                            # client.py가 실행 중인지 확인
-                            if 'client.py' in cmdline[1] or 'start_client.bat' in ' '.join(cmdline):
-                                print(f"⚠️ 다른 클라이언트 프로세스 발견: PID {proc.info['pid']}")
-                                return False
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-            return True
+            # 패키징된 실행 파일인지 확인
+            if getattr(sys, 'frozen', False):
+                return self.check_duplicate_packaged()
+            else:
+                return self.check_duplicate_development()
         except Exception as e:
             print(f"⚠️ 프로세스 확인 중 오류: {e}")
             return True  # 오류 시 실행 허용
+    
+    def check_duplicate_packaged(self):
+        """패키징된 실행 파일용 중복 체크"""
+        try:
+            current_pid = os.getpid()
+            current_exe = os.path.basename(sys.executable)
+            print(f"🔍 패키징된 실행 파일 - PID: {current_pid}, 실행파일: {current_exe}")
+            
+            duplicate_found = False
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['pid'] == current_pid:
+                        continue
+                    if proc.info['name'] == current_exe and proc.is_running():
+                        print(f"⚠️ 같은 실행 파일이 이미 실행 중: PID {proc.info['pid']}")
+                        duplicate_found = True
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            
+            if not duplicate_found:
+                print("✅ 중복 프로세스가 발견되지 않았습니다.")
+            
+            return not duplicate_found
+        except Exception as e:
+            print(f"⚠️ 패키징된 실행 파일 중복 체크 중 오류: {e}")
+            return True
+    
+    def check_duplicate_development(self):
+        """개발 환경용 중복 체크"""
+        try:
+            current_pid = os.getpid()
+            current_script = os.path.basename(sys.argv[0]).lower()
+            print(f"🔍 개발 환경 - PID: {current_pid}, 스크립트: {current_script}")
+
+            duplicate_found = False
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['pid'] == current_pid:
+                        continue
+                    if proc.info['name'] and 'python' in proc.info['name'].lower():
+                        cmdline = proc.info['cmdline']
+                        if cmdline and len(cmdline) > 1:
+                            proc_script = os.path.basename(cmdline[1]).lower()
+                            if proc_script == current_script and proc.is_running():
+                                print(f"⚠️ 같은 스크립트가 이미 실행 중: PID {proc.info['pid']}")
+                                duplicate_found = True
+                                break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+
+            if not duplicate_found:
+                print("✅ 중복 프로세스가 발견되지 않았습니다.")
+
+            return not duplicate_found
+        except Exception as e:
+            print(f"⚠️ 개발 환경 중복 체크 중 오류: {e}")
+            return True
     
     def get_computer_name(self):
         """컴퓨터의 실제 호스트명을 가져옵니다."""
@@ -664,7 +714,7 @@ class SwitchboardClient:
         """클라이언트를 시작합니다."""
         try:
             logging.info("클라이언트 시작")
-            print(f"🚀 Switchboard Plus Client 시작: {self.client_name}")
+            print(f"🚀 UE CMS Client 시작: {self.client_name}")
             
             # 서버에 등록 시도 (실패해도 계속 실행)
             try:
@@ -735,20 +785,18 @@ class SwitchboardClient:
 
 def main():
     """메인 함수"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Switchboard Plus Client')
+    parser = argparse.ArgumentParser(description='UE CMS Client')
     parser.add_argument('--server', default='http://localhost:8000', help='서버 URL')
     
     args = parser.parse_args()
     
     # 환경 변수에서 서버 URL 가져오기 (우선순위)
-    server_url = os.environ.get('SWITCHBOARD_SERVER_URL', args.server)
+    server_url = os.environ.get('UECMS_SERVER_URL', args.server)
     
     try:
         print(f"서버: {server_url}")
         
-        client = SwitchboardClient(
+        client = UECMSClient(
             server_url=server_url
         )
         

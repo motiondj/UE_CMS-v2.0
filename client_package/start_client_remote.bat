@@ -1,32 +1,25 @@
 @echo off
-CHCP 65001
-cls
-title Switchboard Plus Client (Remote)
-
+title UE CMS Client (Remote)
+cd /d "%~dp0"
 echo.
-echo =========================================
-echo  Launching Switchboard Plus v2.0 Client
-echo =========================================
+echo  Launching UE CMS v2.0 Client
 echo.
 
-echo 🚀 Starting client with computer name
-echo To stop the client, press Ctrl+C in this window.
+:: 서버 URL 설정 (기본값: localhost:3000)
+set SERVER_URL=http://localhost:3000
+
+:: 명령줄 인자로 서버 URL을 받은 경우 사용
+if not "%1"=="" set SERVER_URL=%1
+
+echo 서버 URL: %SERVER_URL%
 echo.
 
-REM 서버 주소 설정 (필요시 수정)
-set SERVER_URL=http://192.168.1.100:8000
-echo 서버 주소: %SERVER_URL%
+:: 환경 변수 설정
+set UECMS_SERVER_URL=%SERVER_URL%
 
-REM 환경 변수로 서버 주소 전달
-set SWITCHBOARD_SERVER_URL=%SERVER_URL%
-
-echo.
-echo 클라이언트를 시작합니다...
-echo 서버: %SERVER_URL%
-echo.
-
-switchboard_client.exe
+:: 클라이언트 실행
+ue_cms_client.exe
 
 echo.
-echo Client has been stopped.
+echo 클라이언트가 종료되었습니다.
 pause 

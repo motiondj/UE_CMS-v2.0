@@ -1,17 +1,8 @@
 @echo off
-CHCP 65001
-cls
-title Switchboard Plus Server
-
+title UE CMS Server
+cd /d "%~dp0server"
 echo.
-echo =========================================
-echo  Launching Switchboard Plus v2.0 Server
-echo =========================================
+echo  Launching UE CMS v2.0 Server
 echo.
-
-cd server
 npm start
-
-echo.
-echo Server has been stopped.
 pause 

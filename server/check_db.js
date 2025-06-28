@@ -1,10 +1,10 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const dbPath = path.join(__dirname, 'switchboard.db');
+const dbPath = path.join(__dirname, 'ue_cms.db');
 const db = new sqlite3.Database(dbPath);
 
-console.log('=== Switchboard Plus v2.0 Database Check ===\n');
+console.log('=== UE CMS v2.0 Database Check ===\n');
 
 // 테이블 목록 확인
 db.all("SELECT name FROM sqlite_master WHERE type='table'", (err, tables) => {
