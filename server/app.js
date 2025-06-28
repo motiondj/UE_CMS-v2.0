@@ -166,7 +166,16 @@ app.get('/api/health', (req, res) => {
 
 // 클라이언트 관리 API
 app.get('/api/clients', (req, res) => {
-  db.all('SELECT * FROM clients ORDER BY id', (err, clients) => {
+  const query = `
+    SELECT 
+      c.*,
+      cpi.mac_address
+    FROM clients c
+    LEFT JOIN client_power_info cpi ON c.id = cpi.client_id
+    ORDER BY c.id
+  `;
+  
+  db.all(query, (err, clients) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -183,27 +192,33 @@ app.post('/api/clients', (req, res) => {
     return;
   }
 
-  db.run(
-    'INSERT INTO clients (name, ip_address, port) VALUES (?, ?, ?)',
-    [name, ip_address, port],
-    function(err) {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      
-      // 새로 생성된 클라이언트 정보 조회
-      db.get('SELECT * FROM clients WHERE id = ?', [this.lastID], (err, row) => {
+  // INSERT 전에 같은 이름의 클라이언트 row 삭제
+  db.run('DELETE FROM clients WHERE name = ?', [name], (err) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    // 이후 INSERT
+    db.run(
+      'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
+      [name, ip_address, port, 'online'],
+      function(err) {
         if (err) {
           res.status(500).json({ error: err.message });
           return;
         }
-        
-        io.emit('client_added', row);
-        res.json(row);
-      });
-    }
-  );
+        db.get('SELECT * FROM clients WHERE id = ?', [this.lastID], (err, row) => {
+          if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          console.log(`✅ 새 클라이언트 등록 완료: ${name} (ID: ${this.lastID})`);
+          io.emit('client_added', row);
+          res.json(row);
+        });
+      }
+    );
+  });
 });
 
 app.put('/api/clients/:id', (req, res) => {
@@ -1193,11 +1208,12 @@ app.post('/api/heartbeat', (req, res) => {
         }
       );
     } else {
-      // 새로운 클라이언트 자동 등록
-      console.log(`🆕 새로운 클라이언트 HTTP API 자동 등록: ${clientName} (IP: ${ip_address})`);
+      // 새로운 클라이언트 자동 등록 - 중복 체크 강화
+      console.log(`🆕 새로운 클라이언트 HTTP API 자동 등록 시도: ${clientName} (IP: ${ip_address})`);
       
+      // INSERT OR IGNORE를 사용하여 중복 방지
       db.run(
-        'INSERT INTO clients (name, ip_address, port, status, last_seen) VALUES (?, ?, ?, ?, datetime("now"))',
+        'INSERT OR IGNORE INTO clients (name, ip_address, port, status, last_seen) VALUES (?, ?, ?, ?, datetime("now"))',
         [clientName, ip_address, port, 'online'],
         function(err) {
           if (err) {
@@ -1205,25 +1221,58 @@ app.post('/api/heartbeat', (req, res) => {
             return;
           }
           
-          const newClientId = this.lastID;
-          console.log(`✅ 새로운 클라이언트 HTTP API 자동 등록 완료: ${clientName} (ID: ${newClientId})`);
-          
-          // 새 클라이언트 정보 조회
-          db.get('SELECT * FROM clients WHERE id = ?', [newClientId], (err, newClient) => {
-            if (err) {
-              res.status(500).json({ error: err.message });
-              return;
-            }
+          // INSERT가 성공했는지 확인 (중복이 아닌 경우)
+          if (this.changes > 0) {
+            const newClientId = this.lastID;
+            console.log(`✅ 새로운 클라이언트 HTTP API 자동 등록 완료: ${clientName} (ID: ${newClientId})`);
             
-            // 클라이언트 추가 이벤트 전송
-            io.emit('client_added', newClient);
-            
-            res.json({ 
-              success: true, 
-              message: '클라이언트 자동 등록 완료',
-              clientId: newClientId
+            // 새 클라이언트 정보 조회
+            db.get('SELECT * FROM clients WHERE id = ?', [newClientId], (err, newClient) => {
+              if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+              }
+              
+              // 클라이언트 추가 이벤트 전송
+              io.emit('client_added', newClient);
+              
+              res.json({ 
+                success: true, 
+                message: '클라이언트 자동 등록 완료',
+                clientId: newClientId
+              });
             });
-          });
+          } else {
+            // 중복이 발생한 경우 기존 클라이언트 정보로 응답
+            console.log(`⚠️ 중복 클라이언트 감지 - 기존 클라이언트 정보 사용: ${clientName}`);
+            
+            db.get('SELECT * FROM clients WHERE name = ?', [clientName], (err, existingClient) => {
+              if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+              }
+              
+              // 기존 클라이언트 상태 업데이트
+              db.run(
+                'UPDATE clients SET ip_address = ?, port = ?, status = ?, last_seen = datetime("now") WHERE id = ?',
+                [ip_address, port, 'online', existingClient.id],
+                (err) => {
+                  if (err) {
+                    res.status(500).json({ error: err.message });
+                    return;
+                  }
+                  
+                  console.log(`✅ 중복 클라이언트 정보 업데이트 완료: ${clientName} (ID: ${existingClient.id})`);
+                  
+                  res.json({ 
+                    success: true, 
+                    message: '기존 클라이언트 정보 업데이트 완료',
+                    clientId: existingClient.id
+                  });
+                }
+              );
+            });
+          }
         }
       );
     }
@@ -1256,89 +1305,48 @@ io.on('connection', (socket) => {
     
     console.log(`📝 클라이언트 등록 시도: ${name} (IP: ${clientIP})`);
     
-    // 먼저 같은 이름의 기존 클라이언트가 있는지 확인
-    db.get('SELECT * FROM clients WHERE name = ?', [name], (err, existingClient) => {
+    // INSERT 전에 같은 이름의 클라이언트 row 삭제
+    db.run('DELETE FROM clients WHERE name = ?', [name], (err) => {
       if (err) {
-        console.log(`❌ 클라이언트 조회 실패: ${name} - ${err.message}`);
-        socket.emit('registration_failed', { reason: 'DB 조회 실패' });
+        console.log(`❌ 클라이언트 삭제 실패: ${name} - ${err.message}`);
+        socket.emit('registration_failed', { reason: 'DB 삭제 실패' });
         return;
       }
-      
-      if (existingClient) {
-        // 같은 이름의 클라이언트가 이미 온라인 상태인지 확인
-        const existingSocket = connectedClients.get(name);
-        if (existingSocket && existingSocket.connected) {
-          console.log(`⚠️ 같은 이름의 클라이언트(${existingClient.name})가 이미 온라인 상태입니다. 연결을 중복으로 허용하지 않습니다.`);
-          socket.emit('registration_failed', { reason: '이미 온라인 상태인 클라이언트가 있습니다.' });
-          
-          // 소켓을 해제하지 않고 클라이언트가 자체적으로 종료하도록 함
-          console.log(`✅ 중복 연결 거부 - 클라이언트 자체 종료 대기: ${name}`);
-          return;
+      // 이후 INSERT
+      db.run(
+        'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
+        [name, clientIP, 8081, 'online'],
+        function(err) {
+          if (err) {
+            console.log(`❌ 새 클라이언트 등록 실패: ${name} - ${err.message}`);
+            return;
+          }
+          const newClientId = this.lastID;
+          console.log(`✅ 새로운 클라이언트 Socket.io 등록 완료: ${name} (ID: ${newClientId})`);
+          const newClient = { id: newClientId, name: name, ip_address: clientIP, port: 8081, status: 'online' };
+          connectedClients.set(name, socket);
+          io.emit('client_added', newClient);
+          io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
+          // 새로 등록된 클라이언트에게 MAC 주소 전송 요청
+          console.log(`🔍 새로 등록된 클라이언트에게 MAC 주소 전송 요청: ${name}`);
+          socket.emit('request_mac_address', {
+            clientName: name,
+            clientId: newClient.id,
+            message: '새 클라이언트 등록 - MAC 주소 전송 요청'
+          });
         }
-
-        // 오프라인 상태이거나 소켓이 없는 경우 정보 업데이트
-        console.log(`✅ 같은 이름의 오프라인 클라이언트 발견: ${existingClient.name} (IP: ${existingClient.ip_address} → ${clientIP})`);
-        
-        // 기존 소켓이 있지만 연결이 끊어진 경우에만 제거
-        if (existingClient.name && connectedClients.has(existingClient.name)) {
-          const oldSocket = connectedClients.get(existingClient.name);
-          if (!oldSocket.connected) {
-            connectedClients.delete(existingClient.name);
-            console.log(`🗑️ 연결이 끊어진 기존 소켓 정보 제거: ${existingClient.name}`);
-          }
-        }
-        
-        db.run(
-          'UPDATE clients SET ip_address = ?, status = ?, last_seen = CURRENT_TIMESTAMP WHERE name = ?',
-          [clientIP, 'online', name],
-          (err) => {
-            if (!err) {
-              connectedClients.set(name, socket);
-              console.log(`✅ [${clientType}] 클라이언트 정보 업데이트: ${name} (IP: ${clientIP})`);
-              
-              const updatedClient = { ...existingClient, ip_address: clientIP, status: 'online' };
-              io.emit('client_updated', updatedClient);
-              io.emit('client_status_changed', { id: existingClient.id, name, status: 'online' });
-            } else {
-              console.log(`❌ 클라이언트 정보 업데이트 실패: ${name} - ${err.message}`);
-            }
-          }
-        );
-      } else {
-        // 새 클라이언트 등록
-        const clientInfo = {
-          name: name,
-          ip_address: clientIP,
-          port: 8081,
-          status: 'online'
-        };
-        
-        db.run(
-          'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
-          [clientInfo.name, clientInfo.ip_address, clientInfo.port, clientInfo.status],
-          function(err) {
-            if (!err) {
-              const newClient = { ...clientInfo, id: this.lastID };
-              connectedClients.set(name, socket);
-              console.log(`✅ [${clientType}] 새 클라이언트 등록됨: ${name} (IP: ${clientIP})`);
-              io.emit('client_added', newClient);
-              io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
-            } else {
-              console.log(`❌ 새 클라이언트 등록 실패: ${name} - ${err.message}`);
-            }
-          }
-        );
-      }
+      );
     });
   });
   
   // 하트비트 응답
   socket.on('heartbeat', (data) => {
-    const { name, clientName, status, running_process_count, running_processes, timestamp } = data;
+    const { name, clientName, ip_address, status, running_process_count, running_processes, timestamp } = data;
     const clientNameToUse = name || clientName; // name이 없으면 clientName 사용
     const now = new Date().toISOString();
     const timeStr = new Date().toLocaleTimeString();
-    const clientIP = normalizeIP(socket.handshake.address || '127.0.0.1');
+    // 클라이언트가 보낸 ip_address가 있으면 우선 사용
+    const clientIP = ip_address || normalizeIP(socket.handshake.address || '127.0.0.1');
     
     console.log(`💓 하트비트 수신: ${clientNameToUse} (IP: ${clientIP}, 시간: ${timeStr}, 소켓 ID: ${socket.id})`);
     if (status) {
@@ -1390,37 +1398,79 @@ io.on('connection', (socket) => {
           }
         );
       } else {
-        // 클라이언트가 데이터베이스에 없으면 자동으로 재등록
+        // 클라이언트가 데이터베이스에 없으면 자동으로 재등록 - 중복 체크 강화
         console.log(`🔄 삭제된 클라이언트 자동 재등록 시작: ${clientNameToUse} (IP: ${clientIP}, 소켓 ID: ${socket.id})`);
         
-        const clientInfo = {
-          name: clientNameToUse,
-          ip_address: clientIP,
-          port: 8081,
-          status: 'online'
-        };
-        
-        console.log(`📝 새 클라이언트 정보:`, clientInfo);
-        
+        // INSERT OR IGNORE를 사용하여 중복 방지
         db.run(
-          'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
-          [clientInfo.name, clientInfo.ip_address, clientInfo.port, clientInfo.status],
+          'INSERT OR IGNORE INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
+          [clientNameToUse, clientIP, 8081, 'online'],
           function(err) {
-            if (!err) {
-              const newClient = { ...clientInfo, id: this.lastID };
+            if (err) {
+              console.log(`❌ 클라이언트 자동 재등록 실패: ${clientNameToUse} - ${err.message}`);
+              return;
+            }
+            
+            // INSERT가 성공했는지 확인 (중복이 아닌 경우)
+            if (this.changes > 0) {
+              const newClientId = this.lastID;
+              console.log(`✅ 클라이언트 자동 재등록 완료: ${clientNameToUse} (ID: ${newClientId})`);
+              
+              const newClient = { 
+                id: newClientId,
+                name: clientNameToUse, 
+                ip_address: clientIP, 
+                port: 8081, 
+                status: 'online' 
+              };
+              
               connectedClients.set(clientNameToUse, socket);
-              socket.clientName = clientNameToUse;
-              socket.clientType = 'python';
-              
-              console.log(`✅ 삭제된 클라이언트 자동 재등록 완료: ${clientNameToUse} (ID: ${this.lastID})`);
-              console.log(`🔗 소켓 연결 정보: ${clientNameToUse} -> 소켓 ID ${socket.id}`);
-              
               io.emit('client_added', newClient);
               io.emit('client_status_changed', { id: newClient.id, name: clientNameToUse, status: 'online' });
               
-              console.log(`📡 클라이언트 추가 이벤트 전송 완료: ${clientNameToUse}`);
+              // 새로 등록된 클라이언트에게 MAC 주소 전송 요청
+              console.log(`🔍 새로 등록된 클라이언트에게 MAC 주소 전송 요청: ${clientNameToUse}`);
+              socket.emit('request_mac_address', {
+                clientName: clientNameToUse,
+                clientId: newClient.id,
+                message: '새 클라이언트 등록 - MAC 주소 전송 요청'
+              });
             } else {
-              console.error(`❌ 삭제된 클라이언트 자동 재등록 실패: ${clientNameToUse} - ${err.message}`);
+              // 중복이 발생한 경우 기존 클라이언트 정보로 처리
+              console.log(`⚠️ 중복 클라이언트 감지 - 기존 클라이언트 정보 사용: ${clientNameToUse}`);
+              
+              db.get('SELECT * FROM clients WHERE name = ?', [clientNameToUse], (err, existingClient) => {
+                if (err) {
+                  console.log(`❌ 기존 클라이언트 조회 실패: ${clientNameToUse} - ${err.message}`);
+                  return;
+                }
+                
+                // 기존 클라이언트 상태 업데이트
+                db.run(
+                  'UPDATE clients SET ip_address = ?, status = ?, last_seen = ? WHERE id = ?',
+                  [clientIP, 'online', now, existingClient.id],
+                  (err) => {
+                    if (!err) {
+                      connectedClients.set(clientNameToUse, socket);
+                      console.log(`✅ 중복 클라이언트 정보 업데이트 완료: ${clientNameToUse} (ID: ${existingClient.id})`);
+                      
+                      const updatedClient = { ...existingClient, ip_address: clientIP, status: 'online' };
+                      io.emit('client_updated', updatedClient);
+                      io.emit('client_status_changed', { id: existingClient.id, name: clientNameToUse, status: 'online' });
+                      
+                      // 재등록된 클라이언트에게 MAC 주소 전송 요청
+                      console.log(`🔍 재등록된 클라이언트에게 MAC 주소 전송 요청: ${clientNameToUse}`);
+                      socket.emit('request_mac_address', {
+                        clientName: clientNameToUse,
+                        clientId: existingClient.id,
+                        message: '클라이언트 재등록 - MAC 주소 전송 요청'
+                      });
+                    } else {
+                      console.log(`❌ 중복 클라이언트 정보 업데이트 실패: ${clientNameToUse} - ${err.message}`);
+                    }
+                  }
+                );
+              });
             }
           }
         );

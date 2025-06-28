@@ -36,41 +36,22 @@ class UECMSClient:
     def __init__(self, server_url="http://localhost:8000", client_name=None):
         self.server_url = server_url
         self.client_name = client_name or self.get_computer_name()
-        if not self.client_name or str(self.client_name).strip() == "":
-            print("❌ 클라이언트 이름이 비어 있습니다. 실행을 중단합니다.")
-            logging.error("클라이언트 이름이 비어 있습니다. 실행을 중단합니다.")
-            sys.exit(1)
         self.client_id = None
         self.sio = socketio.Client()
         self.running = False
-        self.current_preset_id = None  # 현재 실행 중인 프리셋 ID
-        
-        # 프로세스 모니터링을 위한 변수들 추가
-        self.running_processes = {}  # {process_name: {'pid': pid, 'command': command, 'start_time': timestamp}}
-        self.process_monitor_thread = None
-        
-        # 중복 실행 방지를 위한 프로세스 확인
-        if not self.check_duplicate_process():
-            print(f"❌ 이미 실행 중인 클라이언트가 있습니다. (이름: {self.client_name})")
-            logging.error(f"이미 실행 중인 클라이언트가 있습니다. (이름: {self.client_name})")
-            sys.exit(1)
+        self.registration_completed = False  # 등록 완료 상태 추적
+        self.running_processes = {}  # 실행 중인 프로세스 추적
         
         # Socket.io 이벤트 핸들러 등록
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
         self.sio.on('execute_command', self.on_execute_command)
         self.sio.on('connection_check', self.on_connection_check)
-        self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('stop_command', self.on_stop_command)
         self.sio.on('power_action', self.on_power_action)
+        self.sio.on('request_mac_address', self.on_request_mac_address)
         
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
-    
-    def check_duplicate_process(self):
-        """중복 프로세스 실행을 방지합니다."""
-        # 중복 실행 방지 비활성화 - 서버에서 중복 연결을 차단하도록 함
-        print("✅ 중복 실행 방지 비활성화 - 서버에서 중복 연결 차단")
-        return True
     
     def get_computer_name(self):
         """컴퓨터의 실제 호스트명을 가져옵니다."""
@@ -80,15 +61,43 @@ class UECMSClient:
             return f"Client_{os.getpid()}"
     
     def get_local_ip(self):
-        """로컬 IP 주소를 가져옵니다."""
+        """로컬 IP 주소를 가져옵니다. (사설 IP 우선, 127.0.0.1 방지)"""
+        # 방법 1: psutil로 모든 네트워크 인터페이스 탐색 (가장 우선)
+        try:
+            import psutil
+            for iface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                        # 사설 IP 대역 우선
+                        if (addr.address.startswith("192.168.") or 
+                            addr.address.startswith("10.") or 
+                            addr.address.startswith("172.")):
+                            print(f"✅ 네트워크 인터페이스에서 사설 IP 발견: {addr.address} ({iface})")
+                            return addr.address
+        except Exception as e:
+            print(f"⚠️ psutil 네트워크 탐색 실패: {e}")
+        
+        # 방법 2: 외부 연결로 IP 확인
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            return ip
-        except:
-            return "127.0.0.1"
+            if not ip.startswith("127."):
+                print(f"✅ 외부 연결로 IP 확인: {ip}")
+                return ip
+        except Exception as e:
+            print(f"⚠️ 외부 연결 IP 확인 실패: {e}")
+        
+        # 방법 3: 기본값 (최후의 수단)
+        print(f"⚠️ 사설 IP를 찾을 수 없어 기본값 사용: 127.0.0.1")
+        return "127.0.0.1"
+    
+    def check_duplicate_process(self):
+        """중복 실행을 감지합니다."""
+        # 중복 실행 감지 완전 비활성화
+        print("✅ 중복 실행 감지 비활성화됨")
+        return False
     
     def get_mac_address(self):
         """MAC 주소를 자동으로 수집합니다."""
@@ -186,6 +195,11 @@ class UECMSClient:
     
     def register_with_server(self):
         """서버에 클라이언트를 등록합니다."""
+        # 이미 등록이 완료되었거나 진행 중이면 중복 등록 방지
+        if self.registration_completed:
+            print(f"⚠️ 이미 등록 완료: {self.registration_completed}")
+            return True
+            
         try:
             client_info = {
                 'name': self.client_name,
@@ -193,19 +207,24 @@ class UECMSClient:
                 'port': 8081
             }
             
+            print(f"📝 서버 등록 시도: {self.client_name} (IP: {client_info['ip_address']})")
+            
             response = requests.post(f"{self.server_url}/api/clients", json=client_info, timeout=10)
             
             if response.status_code == 200:
                 client_data = response.json()
                 self.client_id = client_data['id']
                 logging.info(f"서버 등록 성공: ID {self.client_id}")
+                print(f"✅ 서버 등록 성공: ID {self.client_id}")
                 
                 # 등록 성공 후 MAC 주소 전송
                 self.send_mac_address_to_server()
                 
+                self.registration_completed = True
                 return True
             else:
                 logging.error(f"서버 등록 실패: {response.status_code} - {response.text}")
+                print(f"❌ 서버 등록 실패: {response.status_code}")
                 
                 # 등록 실패해도 MAC 주소는 무조건 전송
                 logging.info("등록 실패했지만 MAC 주소는 전송합니다.")
@@ -215,6 +234,7 @@ class UECMSClient:
                 
         except Exception as e:
             logging.error(f"서버 등록 중 오류: {e}")
+            print(f"❌ 서버 등록 중 오류: {e}")
             
             # 예외 발생해도 MAC 주소는 무조건 전송
             logging.info("등록 중 오류가 발생했지만 MAC 주소는 전송합니다.")
@@ -293,21 +313,22 @@ class UECMSClient:
         """Socket.io 연결 시 호출됩니다."""
         print(f"🔌 서버에 연결되었습니다: {self.client_name}")
         logging.info("서버에 연결되었습니다")
-        if not self.client_name or str(self.client_name).strip() == "":
-            print("❌ 클라이언트 이름이 비어 있습니다. 소켓 등록을 중단합니다.")
-            logging.error("클라이언트 이름이 비어 있습니다. 소켓 등록을 중단합니다.")
-            return
+        
+        # Socket.io 등록만 수행
         self.sio.emit('register_client', {
             'name': self.client_name,
             'clientType': 'python'
         })
         print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
-        self.send_current_process_status()
-        self.start_heartbeat()
-        self.start_process_monitor()
         
-        # Socket.io 연결 후 MAC 주소 전송 (client_id가 없어도 이름으로 전송)
-        self.send_mac_address_to_server()
+        # 현재 프로세스 상태 전송
+        self.send_current_process_status()
+        
+        # 하트비트 시작
+        self.start_heartbeat()
+        
+        # 프로세스 모니터링 시작
+        self.start_process_monitor()
     
     def send_current_process_status(self):
         """현재 실행 중인 프로세스 정보를 서버에 전송합니다."""
@@ -453,15 +474,6 @@ class UECMSClient:
         except Exception as e:
             print(f"❌ 재연결 시도 중 오류: {e}")
             logging.error(f"재연결 시도 중 오류: {e}")
-    
-    def on_registration_failed(self, data):
-        """서버 등록 실패 시 호출됩니다."""
-        reason = data.get('reason', '알 수 없는 이유')
-        logging.error(f"서버 등록 실패: {reason}")
-        print(f"❌ 서버 등록 실패: {reason}")
-        
-        # 등록 실패해도 클라이언트는 계속 실행 (하트비트는 계속 보냄)
-        print(f"⚠️ 등록 실패했지만 클라이언트는 계속 실행됩니다. 하트비트를 계속 전송합니다.")
     
     def on_execute_command(self, data):
         """서버로부터 명령 실행 요청을 받습니다."""
@@ -621,46 +633,46 @@ class UECMSClient:
             })
     
     def on_power_action(self, data):
-        """전원 관리 명령을 받았을 때 호출됩니다."""
+        """전원 액션 요청을 받았을 때 호출됩니다."""
         try:
             action = data.get('action', '')
-            client_id = data.get('clientId')
+            client_name = data.get('client_name', '')
             
-            print(f"🔌 전원 명령 수신: {action} - {self.client_name}")
-            logging.info(f"전원 명령 수신: {action} - {self.client_name}")
+            if client_name != self.client_name:
+                return  # 다른 클라이언트용 명령이면 무시
             
-            success = False
-            error_message = None
+            print(f"⚡ 전원 액션 요청: {action}")
+            logging.info(f"전원 액션 요청: {action}")
             
             if action == 'shutdown':
-                success = self.shutdown_system()
+                self.shutdown_system()
             elif action == 'restart':
-                success = self.restart_system()
+                self.restart_system()
             else:
-                error_message = f'지원하지 않는 전원 명령: {action}'
+                print(f"⚠️ 알 수 없는 전원 액션: {action}")
+                logging.warning(f"알 수 없는 전원 액션: {action}")
+                
+        except Exception as e:
+            logging.error(f"전원 액션 처리 중 오류: {e}")
+    
+    def on_request_mac_address(self, data):
+        """서버에서 MAC 주소 전송 요청을 받았을 때 호출됩니다."""
+        try:
+            client_name = data.get('clientName', '')
+            client_id = data.get('clientId')
+            message = data.get('message', '')
             
-            # 결과 전송
-            self.sio.emit('power_action_result', {
-                'clientName': self.client_name,
-                'clientId': client_id,
-                'action': action,
-                'success': success,
-                'error': error_message,
-                'timestamp': datetime.now().isoformat()
-            })
+            if client_name != self.client_name:
+                return  # 다른 클라이언트용 요청이면 무시
             
-            print(f"✅ 전원 명령 처리 완료: {action} - {'성공' if success else '실패'}")
+            print(f"🔍 MAC 주소 전송 요청 수신: {message}")
+            logging.info(f"MAC 주소 전송 요청 수신: {message}")
+            
+            # MAC 주소 전송
+            self.send_mac_address_to_server()
             
         except Exception as e:
-            logging.error(f"전원 명령 처리 중 오류: {e}")
-            self.sio.emit('power_action_result', {
-                'clientName': self.client_name,
-                'clientId': data.get('clientId'),
-                'action': data.get('action', ''),
-                'success': False,
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            })
+            logging.error(f"MAC 주소 요청 처리 중 오류: {e}")
     
     def shutdown_system(self):
         """시스템을 종료합니다."""
@@ -921,54 +933,31 @@ class UECMSClient:
             logging.info("클라이언트 시작")
             print(f"🚀 UE CMS Client 시작: {self.client_name}")
             
-            # 서버에 등록 시도 (실패해도 계속 실행)
-            try:
-                if self.register_with_server():
-                    print("✅ 서버 등록 성공")
-                else:
-                    print("⚠️ 서버 등록 실패, 독립 실행 모드")
-            except Exception as e:
-                print(f"⚠️ 서버 등록 중 오류: {e}, 독립 실행 모드")
+            # 서버에 등록
+            if self.register_with_server():
+                print("✅ 서버 등록 성공")
+            else:
+                print("⚠️ 서버 등록 실패")
             
-            # Socket.io 연결 시도 (실패해도 계속 실행)
-            try:
-                if self.connect_socket():
-                    print("✅ Socket.io 연결 성공")
-                else:
-                    print("⚠️ Socket.io 연결 실패, 독립 실행 모드")
-            except Exception as e:
-                print(f"⚠️ Socket.io 연결 중 오류: {e}, 독립 실행 모드")
+            # Socket.io 연결
+            if self.connect_socket():
+                print("✅ Socket.io 연결 성공")
+            else:
+                print("⚠️ Socket.io 연결 실패")
             
-            # 클라이언트는 항상 실행 상태로 유지
-            self.running = True
-            print(f"✅ 클라이언트 실행 상태 설정: {self.client_name}")
-            
-            # Ctrl+C로 종료 가능한 메인 루프
-            while self.running:  # True 대신 self.running 사용
-                try:
-                    time.sleep(1)
-                except KeyboardInterrupt:
-                    print("\n🛑 사용자에 의해 종료됨")
-                    self.running = False
-                    break
-                except Exception as e:
-                    print(f"❌ 메인 루프 오류: {e}")
-                    print(f"⚠️ 메인 루프 오류가 발생했지만 계속 실행합니다.")
-                    time.sleep(1)
-                
-        except KeyboardInterrupt:
-            print("\n🛑 사용자에 의해 종료됨")
-        except Exception as e:
-            logging.error(f"클라이언트 실행 중 오류: {e}")
-            print(f"❌ 클라이언트 실행 중 오류: {e}")
-            # 오류가 발생해도 클라이언트는 계속 실행
-            print(f"⚠️ 오류가 발생했지만 클라이언트는 계속 실행됩니다.")
+            # 메인 루프
             while self.running:
                 try:
                     time.sleep(1)
                 except KeyboardInterrupt:
                     print("\n🛑 사용자에 의해 종료됨")
                     break
+                
+        except KeyboardInterrupt:
+            print("\n🛑 사용자에 의해 종료됨")
+        except Exception as e:
+            logging.error(f"클라이언트 실행 중 오류: {e}")
+            print(f"❌ 클라이언트 실행 중 오류: {e}")
         finally:
             self.stop()
     
