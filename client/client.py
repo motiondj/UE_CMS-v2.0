@@ -35,8 +35,11 @@ logging.basicConfig(
 class UECMSClient:
     def __init__(self, server_url="http://localhost:8000", client_name=None):
         self.server_url = server_url
-        # 컴퓨터의 실제 호스트명을 사용 (사용자 지정 무시)
-        self.client_name = self.get_computer_name()
+        self.client_name = client_name or self.get_computer_name()
+        if not self.client_name or str(self.client_name).strip() == "":
+            print("❌ 클라이언트 이름이 비어 있습니다. 실행을 중단합니다.")
+            logging.error("클라이언트 이름이 비어 있습니다. 실행을 중단합니다.")
+            sys.exit(1)
         self.client_id = None
         self.sio = socketio.Client()
         self.running = False
@@ -59,86 +62,15 @@ class UECMSClient:
         self.sio.on('connection_check', self.on_connection_check)
         self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('stop_command', self.on_stop_command)
+        self.sio.on('power_action', self.on_power_action)
         
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
     
     def check_duplicate_process(self):
-        # 강제 실행 옵션 체크
-        if os.environ.get('UECMS_FORCE_RUN', '0') == '1':
-            print("⚠️ 중복 체크 무시(강제 실행)")
-            return True
-            
-        if not PSUTIL_AVAILABLE:
-            print("⚠️ psutil을 사용할 수 없어 중복 프로세스 확인을 건너뜁니다.")
-            return True
-
-        try:
-            # 패키징된 실행 파일인지 확인
-            if getattr(sys, 'frozen', False):
-                return self.check_duplicate_packaged()
-            else:
-                return self.check_duplicate_development()
-        except Exception as e:
-            print(f"⚠️ 프로세스 확인 중 오류: {e}")
-            return True  # 오류 시 실행 허용
-    
-    def check_duplicate_packaged(self):
-        """패키징된 실행 파일용 중복 체크"""
-        try:
-            current_pid = os.getpid()
-            current_exe = os.path.basename(sys.executable)
-            print(f"🔍 패키징된 실행 파일 - PID: {current_pid}, 실행파일: {current_exe}")
-            
-            duplicate_found = False
-            for proc in psutil.process_iter(['pid', 'name']):
-                try:
-                    if proc.info['pid'] == current_pid:
-                        continue
-                    if proc.info['name'] == current_exe and proc.is_running():
-                        print(f"⚠️ 같은 실행 파일이 이미 실행 중: PID {proc.info['pid']}")
-                        duplicate_found = True
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-            
-            if not duplicate_found:
-                print("✅ 중복 프로세스가 발견되지 않았습니다.")
-            
-            return not duplicate_found
-        except Exception as e:
-            print(f"⚠️ 패키징된 실행 파일 중복 체크 중 오류: {e}")
-            return True
-    
-    def check_duplicate_development(self):
-        """개발 환경용 중복 체크"""
-        try:
-            current_pid = os.getpid()
-            current_script = os.path.basename(sys.argv[0]).lower()
-            print(f"🔍 개발 환경 - PID: {current_pid}, 스크립트: {current_script}")
-
-            duplicate_found = False
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['pid'] == current_pid:
-                        continue
-                    if proc.info['name'] and 'python' in proc.info['name'].lower():
-                        cmdline = proc.info['cmdline']
-                        if cmdline and len(cmdline) > 1:
-                            proc_script = os.path.basename(cmdline[1]).lower()
-                            if proc_script == current_script and proc.is_running():
-                                print(f"⚠️ 같은 스크립트가 이미 실행 중: PID {proc.info['pid']}")
-                                duplicate_found = True
-                                break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-
-            if not duplicate_found:
-                print("✅ 중복 프로세스가 발견되지 않았습니다.")
-
-            return not duplicate_found
-        except Exception as e:
-            print(f"⚠️ 개발 환경 중복 체크 중 오류: {e}")
-            return True
+        """중복 프로세스 실행을 방지합니다."""
+        # 중복 실행 방지 비활성화 - 서버에서 중복 연결을 차단하도록 함
+        print("✅ 중복 실행 방지 비활성화 - 서버에서 중복 연결 차단")
+        return True
     
     def get_computer_name(self):
         """컴퓨터의 실제 호스트명을 가져옵니다."""
@@ -158,6 +90,100 @@ class UECMSClient:
         except:
             return "127.0.0.1"
     
+    def get_mac_address(self):
+        """MAC 주소를 자동으로 수집합니다."""
+        try:
+            import subprocess
+            import re
+            
+            print("🔍 MAC 주소 수집 시작...")
+            logging.info("MAC 주소 수집 시작")
+            
+            # Windows의 경우
+            if os.name == 'nt':
+                try:
+                    # ipconfig 명령어로 MAC 주소 조회
+                    result = subprocess.run(['ipconfig', '/all'], 
+                                          capture_output=True, text=True, encoding='cp949')
+                    
+                    if result.returncode == 0:
+                        print(f"✅ ipconfig 명령어 실행 성공")
+                        logging.info("ipconfig 명령어 실행 성공")
+                        
+                        # MAC 주소 패턴 매칭 (한글 Windows 호환)
+                        mac_pattern = r'물리적 주소[.\s]*:[\s]*([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})'
+                        mac_match = re.search(mac_pattern, result.stdout)
+                        
+                        if mac_match:
+                            mac_address = mac_match.group(0).split(':')[-1].strip()
+                            print(f"✅ MAC 주소 수집 성공: {mac_address}")
+                            logging.info(f"MAC 주소 수집 성공: {mac_address}")
+                            return mac_address
+                        else:
+                            print("⚠️ ipconfig에서 MAC 주소를 찾을 수 없습니다")
+                            logging.warning("ipconfig에서 MAC 주소를 찾을 수 없습니다")
+                            
+                            # PowerShell 대체 방법
+                            try:
+                                ps_result = subprocess.run(['powershell', '-Command', 'Get-NetAdapter | Select-Object Name, MacAddress'], 
+                                                          capture_output=True, text=True, encoding='utf-8')
+                                
+                                if ps_result.returncode == 0:
+                                    print("✅ PowerShell 명령어 실행 성공")
+                                    logging.info("PowerShell 명령어 실행 성공")
+                                    
+                                    # 첫 번째 활성 어댑터의 MAC 주소 추출
+                                    lines = ps_result.stdout.strip().split('\n')
+                                    for line in lines[2:]:  # 헤더 제외
+                                        if line.strip() and '-' in line:
+                                            parts = line.split()
+                                            if len(parts) >= 2:
+                                                mac_address = parts[-1]
+                                                if re.match(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', mac_address):
+                                                    print(f"✅ PowerShell로 MAC 주소 수집 성공: {mac_address}")
+                                                    logging.info(f"PowerShell로 MAC 주소 수집 성공: {mac_address}")
+                                                    return mac_address
+                            except Exception as ps_e:
+                                print(f"⚠️ PowerShell MAC 주소 수집 실패: {ps_e}")
+                                logging.warning(f"PowerShell MAC 주소 수집 실패: {ps_e}")
+                    else:
+                        print(f"❌ ipconfig 명령어 실행 실패: {result.returncode}")
+                        logging.error(f"ipconfig 명령어 실행 실패: {result.returncode}")
+                        
+                except Exception as e:
+                    print(f"❌ Windows MAC 주소 수집 실패: {e}")
+                    logging.error(f"Windows MAC 주소 수집 실패: {e}")
+            
+            # Linux/macOS의 경우
+            else:
+                try:
+                    # ip link show 명령어로 MAC 주소 조회
+                    result = subprocess.run(['ip', 'link', 'show'], 
+                                          capture_output=True, text=True)
+                    
+                    if result.returncode == 0:
+                        # MAC 주소 패턴 매칭
+                        mac_pattern = r'link/ether\s+([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})'
+                        mac_match = re.search(mac_pattern, result.stdout)
+                        
+                        if mac_match:
+                            mac_address = mac_match.group(1)
+                            print(f"✅ Linux/macOS MAC 주소 수집 성공: {mac_address}")
+                            logging.info(f"Linux/macOS MAC 주소 수집 성공: {mac_address}")
+                            return mac_address
+                except Exception as e:
+                    print(f"❌ Linux/macOS MAC 주소 수집 실패: {e}")
+                    logging.error(f"Linux/macOS MAC 주소 수집 실패: {e}")
+            
+            print("❌ MAC 주소 수집 실패 - 모든 방법 시도 완료")
+            logging.error("MAC 주소 수집 실패 - 모든 방법 시도 완료")
+            return None
+            
+        except Exception as e:
+            print(f"❌ MAC 주소 수집 중 예외 발생: {e}")
+            logging.error(f"MAC 주소 수집 중 예외 발생: {e}")
+            return None
+    
     def register_with_server(self):
         """서버에 클라이언트를 등록합니다."""
         try:
@@ -173,40 +199,88 @@ class UECMSClient:
                 client_data = response.json()
                 self.client_id = client_data['id']
                 logging.info(f"서버 등록 성공: ID {self.client_id}")
-                return True
-            elif response.status_code == 500 and "UNIQUE constraint failed" in response.text:
-                # 중복 이름인 경우, 기존 클라이언트 정보를 조회하여 ID를 가져옴
-                logging.info(f"이미 등록된 클라이언트입니다: {self.client_name}. 기존 정보를 조회합니다.")
-                try:
-                    # 기존 클라이언트 정보 조회
-                    get_response = requests.get(f"{self.server_url}/api/clients", timeout=10)
-                    if get_response.status_code == 200:
-                        clients = get_response.json()
-                        for client in clients:
-                            if client['name'] == self.client_name:
-                                self.client_id = client['id']
-                                logging.info(f"기존 클라이언트 ID 조회 성공: {self.client_id}")
-                                return True
-                except Exception as e:
-                    logging.error(f"기존 클라이언트 정보 조회 실패: {e}")
                 
-                # 조회 실패해도 연결은 계속 진행
-                logging.info(f"기존 클라이언트 정보 조회 실패했지만 연결을 계속합니다.")
+                # 등록 성공 후 MAC 주소 전송
+                self.send_mac_address_to_server()
+                
                 return True
             else:
                 logging.error(f"서버 등록 실패: {response.status_code} - {response.text}")
+                
+                # 등록 실패해도 MAC 주소는 무조건 전송
+                logging.info("등록 실패했지만 MAC 주소는 전송합니다.")
+                self.send_mac_address_to_server()
+                
                 return False
                 
         except Exception as e:
             logging.error(f"서버 등록 중 오류: {e}")
+            
+            # 예외 발생해도 MAC 주소는 무조건 전송
+            logging.info("등록 중 오류가 발생했지만 MAC 주소는 전송합니다.")
+            self.send_mac_address_to_server()
+            
+            return False
+    
+    def send_mac_address_to_server(self):
+        """MAC 주소를 서버에 전송합니다."""
+        try:
+            print(f"🔍 MAC 주소 서버 전송 시작...")
+            logging.info("MAC 주소 서버 전송 시작")
+            
+            # MAC 주소 수집
+            mac_address = self.get_mac_address()
+            if not mac_address:
+                print(f"❌ MAC 주소 수집 실패")
+                logging.error("MAC 주소 수집 실패")
+                return False
+            
+            print(f"📤 MAC 주소 서버 전송 시도: {mac_address}")
+            logging.info(f"MAC 주소 서버 전송 시도: {mac_address}")
+            
+            # 서버에 MAC 주소 전송 (자동 수집 플래그)
+            response = requests.put(
+                f"{self.server_url}/api/clients/name/{self.client_name}/mac",
+                json={
+                    'mac_address': mac_address,
+                    'is_manual': False  # 자동 수집임을 명시
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ MAC 주소 서버 전송 성공: {mac_address}")
+                logging.info(f"MAC 주소 서버 전송 성공: {mac_address}")
+                
+                # Socket.io 이벤트로도 전송
+                if self.sio.connected:
+                    self.sio.emit('mac_address_sent', {
+                        'clientName': self.client_name,
+                        'macAddress': mac_address,
+                        'isManual': False
+                    })
+                
+                return True
+            else:
+                print(f"❌ MAC 주소 서버 전송 실패: {response.status_code} - {response.text}")
+                logging.error(f"MAC 주소 서버 전송 실패: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ MAC 주소 서버 전송 오류: {e}")
+            logging.error(f"MAC 주소 서버 전송 오류: {e}")
             return False
     
     def connect_socket(self):
         """Socket.io 연결을 설정합니다."""
         try:
-            print(f"🔌 소켓 연결 시도: {self.server_url}")
-            self.sio.connect(self.server_url)
-            self.running = True  # 하트비트 루프를 위해 running 플래그 설정
+            # Socket.IO 연결 설정 (호환성 고려)
+            self.sio.connect(
+                self.server_url,
+                transports=['websocket', 'polling']  # 웹소켓 우선, 폴링 대체
+            )
+            self.running = True
             print(f"✅ Socket.io 연결 성공: {self.client_name}")
             logging.info("Socket.io 연결 성공")
             return True
@@ -219,19 +293,21 @@ class UECMSClient:
         """Socket.io 연결 시 호출됩니다."""
         print(f"🔌 서버에 연결되었습니다: {self.client_name}")
         logging.info("서버에 연결되었습니다")
-        
-        # 클라이언트 등록
+        if not self.client_name or str(self.client_name).strip() == "":
+            print("❌ 클라이언트 이름이 비어 있습니다. 소켓 등록을 중단합니다.")
+            logging.error("클라이언트 이름이 비어 있습니다. 소켓 등록을 중단합니다.")
+            return
         self.sio.emit('register_client', {
             'name': self.client_name,
             'clientType': 'python'
         })
         print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
-        
-        # 현재 실행 중인 프로세스 정보를 서버에 전송
         self.send_current_process_status()
-        
         self.start_heartbeat()
-        self.start_process_monitor()  # 프로세스 모니터링 시작
+        self.start_process_monitor()
+        
+        # Socket.io 연결 후 MAC 주소 전송 (client_id가 없어도 이름으로 전송)
+        self.send_mac_address_to_server()
     
     def send_current_process_status(self):
         """현재 실행 중인 프로세스 정보를 서버에 전송합니다."""
@@ -277,53 +353,106 @@ class UECMSClient:
         """하트비트 전송을 시작합니다."""
         def heartbeat_loop():
             heartbeat_count = 0
-            print(f"💓 하트비트 루프 시작 - 클라이언트: {self.client_name}")
-            logging.info(f"하트비트 루프 시작 - 클라이언트: {self.client_name}")
-            
-            # Ctrl+C로 종료 가능한 하트비트 루프
-            while self.running:  # True 대신 self.running 사용
+            while self.running:
                 try:
                     heartbeat_count += 1
-                    print(f"💓 하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
+                    current_time = datetime.now().strftime("%H:%M:%S")
                     
-                    # 하트비트 전송 (연결 상태와 관계없이 시도)
-                    try:
-                        print(f"📤 하트비트 전송 중: {self.client_name} -> 서버")
-                        
-                        # 클라이언트 상태 정보 수집
-                        running_process_count = len(self.running_processes)
-                        status = "콘텐츠 실행 중" if running_process_count > 0 else "실행 중"
-                        
+                    print(f"💓 하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {current_time}")
+                    logging.info(f"하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
+                    
+                    if self.sio.connected:
+                        # Socket.io 연결이 있으면 Socket.io로 하트비트 전송
                         self.sio.emit('heartbeat', {
-                            'name': self.client_name,
-                            'status': status,
-                            'running_process_count': running_process_count,
-                            'running_processes': list(self.running_processes.keys()),
+                            'clientName': self.client_name,
+                            'ip_address': self.get_local_ip(),
                             'timestamp': datetime.now().isoformat()
                         })
-                        print(f"💓 하트비트 전송 완료 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
-                        logging.info(f"하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
-                    except Exception as heartbeat_error:
-                        print(f"⚠️ 하트비트 전송 실패: {heartbeat_error}")
-                        # 하트비트 전송 실패해도 계속 시도
-                        print(f"⚠️ 하트비트 전송 실패했지만 계속 시도합니다.")
+                        print(f"💓 Socket.io 하트비트 전송 완료: {self.client_name}")
+                        logging.info(f"Socket.io 하트비트 전송 완료: {self.client_name}")
+                    else:
+                        # Socket.io 연결이 없으면 HTTP로 하트비트 전송 및 재등록 시도
+                        print(f"⚠️ Socket.io 연결 없음 - HTTP 하트비트 및 재등록 시도")
+                        logging.warning("Socket.io 연결 없음 - HTTP 하트비트 및 재등록 시도")
+                        
+                        # HTTP 하트비트 전송
+                        try:
+                            response = requests.post(
+                                f"{self.server_url}/api/heartbeat",
+                                json={
+                                    'clientName': self.client_name,
+                                    'ip_address': self.get_local_ip(),
+                                    'timestamp': datetime.now().isoformat()
+                                },
+                                timeout=5
+                            )
+                            
+                            if response.status_code == 200:
+                                print(f"✅ HTTP 하트비트 전송 성공: {self.client_name}")
+                                logging.info(f"HTTP 하트비트 전송 성공: {self.client_name}")
+                            else:
+                                print(f"⚠️ HTTP 하트비트 전송 실패: {response.status_code}")
+                                logging.warning(f"HTTP 하트비트 전송 실패: {response.status_code}")
+                                
+                                # 하트비트 실패 시 재등록 시도
+                                print(f"🔄 하트비트 실패로 인한 재등록 시도")
+                                logging.info("하트비트 실패로 인한 재등록 시도")
+                                self.register_with_server()
+                                
+                        except Exception as e:
+                            print(f"❌ HTTP 하트비트 전송 오류: {e}")
+                            logging.error(f"HTTP 하트비트 전송 오류: {e}")
+                            
+                            # HTTP 하트비트 실패 시 재등록 시도
+                            print(f"🔄 HTTP 하트비트 오류로 인한 재등록 시도")
+                            logging.info("HTTP 하트비트 오류로 인한 재등록 시도")
+                            self.register_with_server()
                     
                     time.sleep(5)  # 5초마다 하트비트
-                except KeyboardInterrupt:
-                    print(f"\n🛑 하트비트 루프에서 사용자에 의해 종료됨: {self.client_name}")
-                    break
+                    
                 except Exception as e:
-                    print(f"❌ 하트비트 루프 오류: {e} - {datetime.now().strftime('%H:%M:%S')}")
-                    logging.error(f"하트비트 루프 오류: {e}")
-                    print(f"⚠️ 하트비트 루프 오류가 발생했지만 계속 실행합니다.")
-                    time.sleep(5)
-            
-            print(f"💓 하트비트 루프 종료: {self.client_name}")
+                    logging.error(f"하트비트 전송 오류: {e}")
+                    print(f"❌ 하트비트 전송 오류: {e}")
+                    time.sleep(5)  # 오류 발생 시에도 5초 후 재시도
         
-        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)  # daemon=True로 변경
+        import threading
+        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
-        print("💓 하트비트 스레드 시작 (5초 간격)")
-        logging.info("하트비트 스레드 시작 (5초 간격)")
+        print(f"💓 하트비트 스레드 시작 (5초 간격)")
+        logging.info(f"하트비트 스레드 시작 (5초 간격)")
+    
+    def attempt_reconnect(self):
+        """서버 재연결을 시도합니다."""
+        try:
+            print(f"🔄 서버 재연결 시도: {self.client_name}")
+            logging.info(f"서버 재연결 시도: {self.client_name}")
+            
+            # 기존 연결 해제
+            if self.sio.connected:
+                self.sio.disconnect()
+            
+            # 잠시 대기
+            time.sleep(2)
+            
+            # 서버에 재등록
+            if self.register_with_server():
+                print(f"✅ 서버 재등록 성공: {self.client_name}")
+                logging.info(f"서버 재등록 성공: {self.client_name}")
+                
+                # Socket.io 재연결
+                if self.connect_socket():
+                    print(f"✅ Socket.io 재연결 성공: {self.client_name}")
+                    logging.info(f"Socket.io 재연결 성공: {self.client_name}")
+                else:
+                    print(f"⚠️ Socket.io 재연결 실패: {self.client_name}")
+                    logging.warning(f"Socket.io 재연결 실패: {self.client_name}")
+            else:
+                print(f"❌ 서버 재등록 실패: {self.client_name}")
+                logging.error(f"서버 재등록 실패: {self.client_name}")
+                
+        except Exception as e:
+            print(f"❌ 재연결 시도 중 오류: {e}")
+            logging.error(f"재연결 시도 중 오류: {e}")
     
     def on_registration_failed(self, data):
         """서버 등록 실패 시 호출됩니다."""
@@ -444,58 +573,134 @@ class UECMSClient:
             logging.error(f"연결 확인 응답 실패: {e}")
     
     def on_stop_command(self, data):
-        """서버로부터 정지 요청을 받습니다."""
+        """정지 명령을 받았을 때 호출됩니다."""
         try:
-            target_client_id = data.get('clientId')
-            target_client_name = data.get('clientName')
-            preset_id = data.get('presetId')
+            client_name = data.get('client_name', '')
+            preset_id = data.get('preset_id')
             
-            print(f"🛑 정지 요청 수신: {data}")
-            logging.info(f"정지 요청 수신: {data}")
+            if client_name != self.client_name:
+                return  # 다른 클라이언트용 명령이면 무시
             
-            # 클라이언트 ID나 이름으로 대상 확인
-            if target_client_id and target_client_id != self.client_id:
-                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
-                return
-            
-            if target_client_name and target_client_name != self.client_name:
-                print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
-                return
-            
-            print(f"✅ 정지 요청 대상 확인됨: {self.client_name}")
+            print(f"🛑 정지 명령 수신: {self.client_name}")
+            logging.info(f"정지 명령 수신: {self.client_name}")
             
             # 실행 중인 프로세스 정지
-            self.stop_running_processes()
+            stopped_count = self.stop_running_processes()
             
-            # 프리셋 ID 초기화
-            stopped_preset_id = self.current_preset_id
-            self.current_preset_id = None
-            print(f"📝 프리셋 ID 초기화: {stopped_preset_id} -> None")
-            
-            # 정지 결과를 서버에 전송
+            # 정지 결과 전송
             self.sio.emit('stop_result', {
-                'clientId': self.client_id,
                 'clientName': self.client_name,
+                'clientId': self.client_id,
                 'presetId': preset_id,
-                'stoppedPresetId': stopped_preset_id,
-                'result': {'success': True, 'message': '프로세스 정지 완료'},
+                'stoppedPresetId': self.current_preset_id,
+                'result': {
+                    'success': True,
+                    'stopped_processes': stopped_count,
+                    'message': f'{stopped_count}개 프로세스가 정지되었습니다.'
+                },
                 'timestamp': datetime.now().isoformat()
             })
             
-            print(f"✅ 정지 요청 처리 완료: {self.client_name}")
+            # 현재 프리셋 ID 초기화
+            self.current_preset_id = None
+            
+            print(f"✅ 정지 명령 완료: {stopped_count}개 프로세스 정지")
             
         except Exception as e:
-            error_msg = f"정지 요청 처리 중 오류: {e}"
-            logging.error(error_msg)
-            print(f"❌ {error_msg}")
-            
+            logging.error(f"정지 명령 처리 중 오류: {e}")
             self.sio.emit('stop_result', {
-                'clientId': self.client_id,
                 'clientName': self.client_name,
-                'presetId': data.get('presetId'),
-                'result': {'error': error_msg},
+                'clientId': self.client_id,
+                'presetId': data.get('preset_id'),
+                'stoppedPresetId': self.current_preset_id,
+                'result': {
+                    'success': False,
+                    'error': str(e)
+                },
                 'timestamp': datetime.now().isoformat()
             })
+    
+    def on_power_action(self, data):
+        """전원 관리 명령을 받았을 때 호출됩니다."""
+        try:
+            action = data.get('action', '')
+            client_id = data.get('clientId')
+            
+            print(f"🔌 전원 명령 수신: {action} - {self.client_name}")
+            logging.info(f"전원 명령 수신: {action} - {self.client_name}")
+            
+            success = False
+            error_message = None
+            
+            if action == 'shutdown':
+                success = self.shutdown_system()
+            elif action == 'restart':
+                success = self.restart_system()
+            else:
+                error_message = f'지원하지 않는 전원 명령: {action}'
+            
+            # 결과 전송
+            self.sio.emit('power_action_result', {
+                'clientName': self.client_name,
+                'clientId': client_id,
+                'action': action,
+                'success': success,
+                'error': error_message,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            print(f"✅ 전원 명령 처리 완료: {action} - {'성공' if success else '실패'}")
+            
+        except Exception as e:
+            logging.error(f"전원 명령 처리 중 오류: {e}")
+            self.sio.emit('power_action_result', {
+                'clientName': self.client_name,
+                'clientId': data.get('clientId'),
+                'action': data.get('action', ''),
+                'success': False,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            })
+    
+    def shutdown_system(self):
+        """시스템을 종료합니다."""
+        try:
+            print("🛑 시스템 종료 시작")
+            
+            # 실행 중인 프로세스들 정지
+            self.stop_running_processes()
+            
+            # 시스템 종료 명령 실행
+            if os.name == 'nt':  # Windows
+                subprocess.run(['shutdown', '/s', '/t', '0'], check=True)
+            else:  # Linux/macOS
+                subprocess.run(['shutdown', '-h', 'now'], check=True)
+            
+            return True
+        except Exception as e:
+            print(f"❌ 시스템 종료 실패: {e}")
+            logging.error(f"시스템 종료 실패: {e}")
+            return False
+    
+    def restart_system(self):
+        """시스템을 재부팅합니다."""
+        try:
+            print("🔄 시스템 재부팅 시작")
+            
+            # 실행 중인 프로세스들 정지
+            self.stop_running_processes()
+            
+            # 시스템 재부팅 명령 실행
+            if os.name == 'nt':  # Windows
+                subprocess.run(['shutdown', '/r', '/t', '0'], check=True)
+            else:  # Linux/macOS
+                subprocess.run(['reboot'], check=True)
+            
+            return True
+        except Exception as e:
+            print(f"❌ 시스템 재부팅 실패: {e}")
+            logging.error(f"시스템 재부팅 실패: {e}")
+            return False
     
     def add_running_process(self, process_name, pid, command):
         """실행 중인 프로세스를 추적 목록에 추가합니다."""
@@ -787,6 +992,7 @@ def main():
     """메인 함수"""
     parser = argparse.ArgumentParser(description='UE CMS Client')
     parser.add_argument('--server', default='http://localhost:8000', help='서버 URL')
+    parser.add_argument('--name', help='클라이언트 이름 (지정하지 않으면 컴퓨터 호스트명 사용)')
     
     args = parser.parse_args()
     
@@ -797,7 +1003,8 @@ def main():
         print(f"서버: {server_url}")
         
         client = UECMSClient(
-            server_url=server_url
+            server_url=server_url,
+            client_name=args.name
         )
         
         print(f"컴퓨터 이름: {client.client_name}")

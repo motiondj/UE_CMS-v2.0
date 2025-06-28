@@ -161,11 +161,7 @@ class UECMSTrayClient:
         logging.info(f"UE CMS 클라이언트 초기화 완료: {self.client_name}")
     
     def check_duplicate_process(self):
-        # 강제 실행 옵션 체크
-        if os.environ.get('UECMS_FORCE_RUN', '0') == '1':
-            print("⚠️ 중복 체크 무시(강제 실행)")
-            return True
-            
+        """중복 프로세스 실행을 방지합니다."""
         try:
             import psutil
             # 패키징된 실행 파일인지 확인

@@ -79,6 +79,16 @@
     color: var(--text-muted);
 }
 
+.client-mac {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Courier New', monospace;
+    background-color: var(--bg-secondary);
+    padding: 2px 4px;
+    border-radius: 3px;
+    margin-top: 2px;
+}
+
 .client-status {
     font-size: 11px;
     color: var(--text-muted);
@@ -380,4 +390,14 @@
   padding: 10px 0; /* 상하 패딩을 늘려 버튼 높이 확보 */
   font-size: 14px; /* 폰트 크기 살짝 키움 */
   text-align: center;
+}
+
+.mac-edit-btn {
+  width: 100%;
+  display: block;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 8px;
 }

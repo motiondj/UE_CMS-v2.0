@@ -14,8 +14,24 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     port: 8081,
     description: ''
   });
+  const [macAddress, setMacAddress] = useState('');
+  const [showMacEditModal, setShowMacEditModal] = useState(false);
+  const [currentMacAddress, setCurrentMacAddress] = useState('');
 
-  const handleSubmit = (e) => {
+  // 클라이언트 상세 모달이 열릴 때 MAC 주소 로드
+  React.useEffect(() => {
+    if (showDetailModal && selectedClient) {
+      // 클라이언트 객체의 mac_address 속성을 직접 사용
+      const mac = selectedClient.mac_address || '설정되지 않음';
+      setCurrentMacAddress(mac);
+      const macDisplay = document.getElementById('mac-address-display');
+      if (macDisplay) {
+        macDisplay.textContent = mac;
+      }
+    }
+  }, [showDetailModal, selectedClient]);
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
     const existingNames = clients.map(c => c.name);
@@ -31,9 +47,31 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       return;
     }
 
-    showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. 연결을 확인하고 있습니다...`, 'success');
-    setShowAddModal(false);
-    setFormData({ name: '', ip_address: '', port: 8081, description: '' });
+    try {
+      const response = await fetch('/api/clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formData.name,
+          ip_address: formData.ip_address,
+          port: formData.port,
+          description: formData.description
+        })
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. 연결을 확인하고 있습니다...`, 'success');
+        setShowAddModal(false);
+        setFormData({ name: '', ip_address: '', port: 8081, description: '' });
+        // 클라이언트 목록 새로고침은 App.js의 socket listener가 처리
+      } else {
+        throw new Error(result.error || '클라이언트 추가에 실패했습니다.');
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
   };
 
   const showClientDetail = (client) => {
@@ -100,13 +138,107 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     }
   };
 
-  const powerAction = (action) => {
+  const updateMacAddress = async () => {
+    if (!selectedClient || !macAddress) return;
+
+    try {
+      const response = await fetch(`/api/clients/${selectedClient.id}/mac-address`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          mac_address: macAddress,
+          is_manual: true  // 수동 입력임을 명시
+        })
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        showToast(`MAC 주소가 업데이트되었습니다: ${macAddress}`, 'success');
+        
+        // 클라이언트 목록에서 MAC 주소 실시간 업데이트
+        onClientUpdate({
+          ...selectedClient,
+          mac_address: macAddress
+        });
+        
+        setShowMacEditModal(false);
+        setMacAddress('');
+      } else {
+        throw new Error(result.error || 'MAC 주소 업데이트에 실패했습니다.');
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  };
+
+  const openMacEditModal = async (client) => {
+    setSelectedClient(client);
+    // 클라이언트의 mac_address 속성을 직접 사용
+    const currentMac = client.mac_address || '';
+    setMacAddress(currentMac);
+    setShowMacEditModal(true);
+  };
+
+  const powerAction = async (clientId, action) => {
     const actionNames = {
-      'on': '켜기',
-      'reboot': '재부팅',
-      'off': '끄기'
+      'wake': '켜기',
+      'restart': '재부팅',
+      'shutdown': '끄기'
     };
-    showToast(`전원 ${actionNames[action]} 기능은 v2.1에서 활성화됩니다.`, 'info');
+    
+    const actionName = actionNames[action];
+    
+    if (window.confirm(`정말 "${selectedClient?.name}" 클라이언트를 ${actionName}하시겠습니까?`)) {
+      try {
+        const response = await fetch(`/api/clients/${clientId}/power`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+          showToast(`전원 ${actionName} 명령이 전송되었습니다.`, 'success');
+        } else {
+          throw new Error(result.error || `전원 ${actionName}에 실패했습니다.`);
+        }
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    }
+  };
+
+  const bulkPowerAction = async (action, clientIds) => {
+    const actionNames = {
+      'wake_all': '켜기',
+      'restart_all': '재부팅',
+      'shutdown_all': '끄기'
+    };
+    
+    const actionName = actionNames[action];
+    const count = clientIds.length;
+    
+    if (window.confirm(`정말 선택된 ${count}개 클라이언트를 모두 ${actionName}하시겠습니까?`)) {
+      try {
+        const response = await fetch('/api/bulk/power', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, client_ids: clientIds })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+          showToast(`일괄 전원 ${actionName} 명령이 전송되었습니다. (성공: ${result.results.successful}, 실패: ${result.results.failed})`, 'success');
+        } else {
+          throw new Error(result.error || `일괄 전원 ${actionName}에 실패했습니다.`);
+        }
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    }
   };
 
   const getStatusIndicator = (status) => {
@@ -182,6 +314,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 <div className="client-details">
                   <span className="client-name">{client.name}</span>
                   <span className="client-ip">{client.ip_address}</span>
+                  <span className="client-mac">{client.mac_address && client.mac_address.trim() ? client.mac_address : 'MAC 주소 없음'}</span>
                   <span className="client-status">
                     {client.status}
                     {client.running_process_count > 0 && (
@@ -322,6 +455,19 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                       </span></div>
                     </div>
                   </div>
+                  
+                  {/* MAC 주소 정보 */}
+                  <div className="info-section">
+                    <h4>🔗 네트워크 정보</h4>
+                    <div className="info-grid">
+                      <div>📡 MAC 주소: <span id="mac-address-display">
+                        {selectedClient.mac_address && selectedClient.mac_address.trim() ? selectedClient.mac_address : '설정되지 않음'}
+                      </span></div>
+                    </div>
+                    <button className="btn btn-secondary mac-edit-btn" onClick={() => openMacEditModal(selectedClient)}>
+                      주소 수정
+                    </button>
+                  </div>
                 </div>
 
                 {/* 가운데 단: 설정 */}
@@ -349,34 +495,31 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 {/* 오른쪽 단: 전원 제어 */}
                 <div className="modal-column modal-column-power">
                   <div className="info-section power-control-section">
-                    <h4>⚡ 전원 제어 <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>(v2.1)</span></h4>
+                    <h4>⚡ 전원 제어</h4>
                     <div className="button-group vertical">
                       <button 
                         className="btn btn-primary" 
-                        onClick={() => powerAction('on')}
+                        onClick={() => powerAction(selectedClient.id, 'wake')}
                         title="Wake-on-LAN으로 전원 켜기"
-                        disabled
                       >
-                        켜기
+                        🔌 켜기
                       </button>
                       <button 
                         className="btn btn-secondary" 
-                        onClick={() => powerAction('reboot')}
+                        onClick={() => powerAction(selectedClient.id, 'restart')}
                         title="원격 재부팅"
-                        disabled
                       >
-                        재부팅
+                        🔄 재부팅
                       </button>
                       <button 
                         className="btn btn-danger" 
-                        onClick={() => powerAction('off')}
+                        onClick={() => powerAction(selectedClient.id, 'shutdown')}
                         title="원격 종료"
-                        disabled
                       >
-                        끄기
+                        ⚡ 끄기
                       </button>
                     </div>
-                    <p className="warning-text">💡 전원 제어 기능은 v2.1에서 활성화됩니다.</p>
+                    <p className="info-text">💡 MAC 주소가 설정된 클라이언트만 Wake-on-LAN이 가능합니다.</p>
                   </div>
                 </div>
               </div>
@@ -459,6 +602,42 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MAC 주소 수정 모달 */}
+      {showMacEditModal && selectedClient && (
+        <div className="modal show">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>🔗 {selectedClient.name} MAC 주소 설정</h3>
+              <span className="close" onClick={() => setShowMacEditModal(false)}>&times;</span>
+            </div>
+            
+            <div className="form-group">
+              <label htmlFor="macAddress">📡 MAC 주소</label>
+              <input 
+                type="text" 
+                id="macAddress"
+                className="form-input" 
+                placeholder="00:11:22:33:44:55" 
+                pattern="^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$"
+                value={macAddress}
+                onChange={(e) => setMacAddress(e.target.value.toUpperCase())}
+                required
+              />
+              <small className="form-help">Wake-on-LAN 기능을 위해 MAC 주소를 설정하세요. (XX:XX:XX:XX:XX:XX 형식)</small>
+            </div>
+            
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setShowMacEditModal(false)}>
+                취소
+              </button>
+              <button type="button" className="btn btn-primary" onClick={updateMacAddress}>
+                저장
+              </button>
+            </div>
           </div>
         </div>
       )}

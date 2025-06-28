@@ -47,35 +47,49 @@ function App() {
 
     newSocket.on('connect', () => {
       setIsSocketConnected(true);
-      // 웹UI는 클라이언트로 등록하지 않음 (관리 인터페이스이므로)
-      // newSocket.emit('register_client', { 
-      //   name: 'web-ui',
-      //   clientType: 'web-ui' 
-      // });
-      showToast('🔌 Socket 연결이 성공했습니다.', 'success');
-      
-      // 웹UI는 하트비트를 보내지 않음 (클라이언트가 아니므로)
-      // startHeartbeat(newSocket);
+      console.log('✅ Socket.io 연결됨');
     });
 
     newSocket.on('disconnect', () => {
       setIsSocketConnected(false);
-      showToast('🔌 Socket 연결이 끊어졌습니다.', 'error');
+      console.log('❌ Socket.io 연결 끊김');
     });
 
-    // 웹UI는 클라이언트가 아니므로 연결 확인 응답하지 않음
-    // newSocket.on('connection_check', (data) => {
-    //   newSocket.emit('connection_check_response', {
-    //     clientName: 'web-ui'
-    //   });
-    // });
+    // 클라이언트 추가 이벤트
+    newSocket.on('client_added', (client) => {
+      console.log('📡 클라이언트 추가 이벤트 수신:', client);
+      setClients(prevClients => {
+        // 중복 방지
+        const exists = prevClients.find(c => c.id === client.id);
+        if (exists) {
+          return prevClients.map(c => c.id === client.id ? client : c);
+        }
+        return [...prevClients, client];
+      });
+      showToast(`✅ 클라이언트 추가됨: ${client.name}`, 'success');
+    });
 
-    newSocket.on('client_update', (data) => {
-      setClients(prev => prev.map(client => 
-        client.id === data.client_id 
-          ? { ...client, ...data.updates }
-          : client
+    // 클라이언트 삭제 이벤트
+    newSocket.on('client_deleted', (data) => {
+      console.log('📡 클라이언트 삭제 이벤트 수신:', data);
+      setClients(prevClients => prevClients.filter(c => c.id !== data.id));
+      showToast('🗑️ 클라이언트가 삭제되었습니다', 'info');
+    });
+
+    // 클라이언트 상태 변경 이벤트
+    newSocket.on('client_status_changed', (data) => {
+      console.log('📡 클라이언트 상태 변경 이벤트 수신:', data);
+      setClients(prev => prev.map(c => 
+        c.name === data.name ? { ...c, status: data.status } : c
       ));
+    });
+
+    // 클라이언트 업데이트 이벤트
+    newSocket.on('client_updated', (client) => {
+      console.log('📡 클라이언트 업데이트 이벤트 수신:', client);
+      setClients(prevClients => 
+        prevClients.map(c => c.id === client.id ? client : c)
+      );
     });
 
     newSocket.on('execution_update', (data) => {
@@ -93,58 +107,12 @@ function App() {
       showToast('🔄 클라이언트 상태가 업데이트되었습니다.', 'info');
     });
 
-    // 클라이언트 상태 변경 이벤트 처리
-    newSocket.on('client_status_changed', (data) => {
-      try {
-        console.log('📊 클라이언트 상태 변경:', data);
-        setClients(prev => prev.map(client => 
-          client.name === data.name 
-            ? { ...client, status: data.status }
-            : client
-        ));
-        
-        // 클라이언트 상태 변경 시 프리셋 상태도 업데이트
-        // 프리셋 상태 업데이트는 PresetSection 컴포넌트에서 처리됨
-        console.log('🔄 클라이언트 상태 변경으로 인한 프리셋 상태 업데이트 필요');
-      } catch (error) {
-        console.warn('클라이언트 상태 변경 처리 중 오류:', error);
-      }
-    });
-
-    // 새 클라이언트 추가 이벤트 처리
-    newSocket.on('client_added', (newClient) => {
-      try {
-        console.log('➕ 새 클라이언트 추가:', newClient);
-        setClients(prev => [...prev, newClient]);
-        showToast(`🖥️ 새 클라이언트 "${newClient.name}"이(가) 연결되었습니다.`, 'success');
-      } catch (error) {
-        console.warn('클라이언트 추가 처리 중 오류:', error);
-      }
-    });
-
-    // 클라이언트 업데이트 이벤트 처리
-    newSocket.on('client_updated', (updatedClient) => {
-      try {
-        console.log('✏️ 클라이언트 업데이트:', updatedClient);
-        setClients(prev => prev.map(client => 
-          client.id === updatedClient.id 
-            ? updatedClient
-            : client
-        ));
-      } catch (error) {
-        console.warn('클라이언트 업데이트 처리 중 오류:', error);
-      }
-    });
-
-    // 클라이언트 삭제 이벤트 처리
-    newSocket.on('client_deleted', (data) => {
-      try {
-        console.log('🗑️ 클라이언트 삭제:', data);
-        setClients(prev => prev.filter(client => client.id !== data.id));
-        showToast('🗑️ 클라이언트가 삭제되었습니다.', 'info');
-      } catch (error) {
-        console.warn('클라이언트 삭제 처리 중 오류:', error);
-      }
+    // MAC 주소 업데이트 이벤트 처리
+    newSocket.on('mac_address_updated', (data) => {
+      setClients(prev => prev.map(c => 
+        c.id === data.clientId ? { ...c, mac_address: data.macAddress } : c
+      ));
+      showToast(`MAC 주소 업데이트됨: ${data.clientName}`, 'success');
     });
 
     // 그룹 추가 이벤트 처리
@@ -221,24 +189,12 @@ function App() {
       }
     });
 
+    newSocket.on('preset_executed', (data) => {
+      showToast(`프리셋 실행됨: ${data.presetName}`, 'success');
+    });
+
     return () => newSocket.close();
   }, []);
-
-  // 웹UI는 클라이언트가 아니므로 하트비트를 보내지 않음
-  // const startHeartbeat = (socket) => {
-  //   const heartbeatInterval = setInterval(() => {
-  //     if (socket.connected) {
-  //       socket.emit('heartbeat', {
-  //         name: 'web-ui'
-  //       });
-  //     } else {
-  //       clearInterval(heartbeatInterval);
-  //     }
-  //   }, 30000); // 30초마다 하트비트
-
-  //   // 컴포넌트 언마운트 시 인터벌 정리
-  //   return () => clearInterval(heartbeatInterval);
-  // };
 
   // API 연결 상태 확인
   useEffect(() => {
@@ -293,6 +249,18 @@ function App() {
     }
   }, [isApiConnected]);
 
+  // 5초마다 클라이언트 목록 자동 새로고침
+  useEffect(() => {
+    if (!isApiConnected) return;
+
+    const interval = setInterval(() => {
+      console.log('🔄 5초마다 클라이언트 목록 자동 새로고침');
+      loadClientsOnly(); // 클라이언트만 새로고침 (성능 최적화)
+    }, 5000); // 5초
+
+    return () => clearInterval(interval);
+  }, [isApiConnected]);
+
   const loadData = async () => {
     try {
       const [clientsRes, groupsRes, presetsRes, executionsRes] = await Promise.all([
@@ -308,6 +276,20 @@ function App() {
       if (executionsRes.ok) setExecutions(await executionsRes.json());
     } catch (error) {
       console.error('데이터 로드 오류:', error);
+    }
+  };
+
+  // 클라이언트 목록만 새로고침 (성능 최적화)
+  const loadClientsOnly = async () => {
+    try {
+      const clientsRes = await fetch(`${API_BASE}/api/clients`);
+      if (clientsRes.ok) {
+        const updatedClients = await clientsRes.json();
+        setClients(updatedClients);
+        console.log('✅ 클라이언트 목록 자동 새로고침 완료');
+      }
+    } catch (error) {
+      console.error('클라이언트 목록 새로고침 오류:', error);
     }
   };
 
