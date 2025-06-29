@@ -5,5 +5,5 @@ echo.
 echo  Launching UE CMS v2.0 Client
 echo.
 call venv\Scripts\activate.bat
-python client.py
+python "%~dp0client\client_tray.py"
 pause 

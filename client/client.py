@@ -45,11 +45,11 @@ class UECMSClient:
         # Socket.io 이벤트 핸들러 등록
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
+        self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('execute_command', self.on_execute_command)
         self.sio.on('connection_check', self.on_connection_check)
         self.sio.on('stop_command', self.on_stop_command)
         self.sio.on('power_action', self.on_power_action)
-        self.sio.on('request_mac_address', self.on_request_mac_address)
         
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
     
@@ -61,248 +61,84 @@ class UECMSClient:
             return f"Client_{os.getpid()}"
     
     def get_local_ip(self):
-        """로컬 IP 주소를 가져옵니다. (사설 IP 우선, 127.0.0.1 방지)"""
-        # 방법 1: psutil로 모든 네트워크 인터페이스 탐색 (가장 우선)
-        try:
-            import psutil
-            for iface, addrs in psutil.net_if_addrs().items():
-                for addr in addrs:
-                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-                        # 사설 IP 대역 우선
-                        if (addr.address.startswith("192.168.") or 
-                            addr.address.startswith("10.") or 
-                            addr.address.startswith("172.")):
-                            print(f"✅ 네트워크 인터페이스에서 사설 IP 발견: {addr.address} ({iface})")
-                            return addr.address
-        except Exception as e:
-            print(f"⚠️ psutil 네트워크 탐색 실패: {e}")
-        
-        # 방법 2: 외부 연결로 IP 확인
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            if not ip.startswith("127."):
-                print(f"✅ 외부 연결로 IP 확인: {ip}")
-                return ip
-        except Exception as e:
-            print(f"⚠️ 외부 연결 IP 확인 실패: {e}")
-        
-        # 방법 3: 기본값 (최후의 수단)
-        print(f"⚠️ 사설 IP를 찾을 수 없어 기본값 사용: 127.0.0.1")
-        return "127.0.0.1"
+        """고정IP 환경 전용: 반드시 사설 네트워크 IP만 반환 (192.168.x.x, 10.x.x.x, 172.x.x.x)"""
+        import psutil
+        print(f"🔍 [고정IP] 네트워크 인터페이스에서 사설 IP 탐색...")
+        logging.info("[고정IP] 네트워크 인터페이스에서 사설 IP 탐색...")
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                    if (addr.address.startswith("192.168.") or 
+                        addr.address.startswith("10.") or 
+                        addr.address.startswith("172.")):
+                        print(f"✅ [고정IP] 사설 IP 반환: {addr.address} ({iface})")
+                        logging.info(f"[고정IP] 사설 IP 반환: {addr.address} ({iface})")
+                        return addr.address
+        print("❌ [고정IP] 사설 IP를 찾지 못했습니다! 네트워크 설정을 확인하세요.")
+        logging.error("[고정IP] 사설 IP를 찾지 못했습니다! 네트워크 설정을 확인하세요.")
+        raise RuntimeError("사설 네트워크 IP를 찾지 못했습니다. 네트워크 연결을 확인하세요.")
     
     def check_duplicate_process(self):
-        """중복 실행을 감지합니다."""
-        # 중복 실행 감지 완전 비활성화
-        print("✅ 중복 실행 감지 비활성화됨")
-        return False
-    
-    def get_mac_address(self):
-        """MAC 주소를 자동으로 수집합니다."""
+        """같은 이름의 클라이언트가 이미 실행 중인지 확인합니다."""
         try:
-            import subprocess
-            import re
-            
-            print("🔍 MAC 주소 수집 시작...")
-            logging.info("MAC 주소 수집 시작")
-            
-            # Windows의 경우
-            if os.name == 'nt':
+            current_pid = os.getpid()
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
-                    # ipconfig 명령어로 MAC 주소 조회
-                    result = subprocess.run(['ipconfig', '/all'], 
-                                          capture_output=True, text=True, encoding='cp949')
+                    # 현재 프로세스는 제외
+                    if proc.info['pid'] == current_pid:
+                        continue
                     
-                    if result.returncode == 0:
-                        print(f"✅ ipconfig 명령어 실행 성공")
-                        logging.info("ipconfig 명령어 실행 성공")
-                        
-                        # MAC 주소 패턴 매칭 (한글 Windows 호환)
-                        mac_pattern = r'물리적 주소[.\s]*:[\s]*([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})'
-                        mac_match = re.search(mac_pattern, result.stdout)
-                        
-                        if mac_match:
-                            mac_address = mac_match.group(0).split(':')[-1].strip()
-                            print(f"✅ MAC 주소 수집 성공: {mac_address}")
-                            logging.info(f"MAC 주소 수집 성공: {mac_address}")
-                            return mac_address
-                        else:
-                            print("⚠️ ipconfig에서 MAC 주소를 찾을 수 없습니다")
-                            logging.warning("ipconfig에서 MAC 주소를 찾을 수 없습니다")
-                            
-                            # PowerShell 대체 방법
-                            try:
-                                ps_result = subprocess.run(['powershell', '-Command', 'Get-NetAdapter | Select-Object Name, MacAddress'], 
-                                                          capture_output=True, text=True, encoding='utf-8')
-                                
-                                if ps_result.returncode == 0:
-                                    print("✅ PowerShell 명령어 실행 성공")
-                                    logging.info("PowerShell 명령어 실행 성공")
-                                    
-                                    # 첫 번째 활성 어댑터의 MAC 주소 추출
-                                    lines = ps_result.stdout.strip().split('\n')
-                                    for line in lines[2:]:  # 헤더 제외
-                                        if line.strip() and '-' in line:
-                                            parts = line.split()
-                                            if len(parts) >= 2:
-                                                mac_address = parts[-1]
-                                                if re.match(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', mac_address):
-                                                    print(f"✅ PowerShell로 MAC 주소 수집 성공: {mac_address}")
-                                                    logging.info(f"PowerShell로 MAC 주소 수집 성공: {mac_address}")
-                                                    return mac_address
-                            except Exception as ps_e:
-                                print(f"⚠️ PowerShell MAC 주소 수집 실패: {ps_e}")
-                                logging.warning(f"PowerShell MAC 주소 수집 실패: {ps_e}")
-                    else:
-                        print(f"❌ ipconfig 명령어 실행 실패: {result.returncode}")
-                        logging.error(f"ipconfig 명령어 실행 실패: {result.returncode}")
-                        
-                except Exception as e:
-                    print(f"❌ Windows MAC 주소 수집 실패: {e}")
-                    logging.error(f"Windows MAC 주소 수집 실패: {e}")
-            
-            # Linux/macOS의 경우
-            else:
-                try:
-                    # ip link show 명령어로 MAC 주소 조회
-                    result = subprocess.run(['ip', 'link', 'show'], 
-                                          capture_output=True, text=True)
-                    
-                    if result.returncode == 0:
-                        # MAC 주소 패턴 매칭
-                        mac_pattern = r'link/ether\s+([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})'
-                        mac_match = re.search(mac_pattern, result.stdout)
-                        
-                        if mac_match:
-                            mac_address = mac_match.group(1)
-                            print(f"✅ Linux/macOS MAC 주소 수집 성공: {mac_address}")
-                            logging.info(f"Linux/macOS MAC 주소 수집 성공: {mac_address}")
-                            return mac_address
-                except Exception as e:
-                    print(f"❌ Linux/macOS MAC 주소 수집 실패: {e}")
-                    logging.error(f"Linux/macOS MAC 주소 수집 실패: {e}")
-            
-            print("❌ MAC 주소 수집 실패 - 모든 방법 시도 완료")
-            logging.error("MAC 주소 수집 실패 - 모든 방법 시도 완료")
-            return None
-            
+                    # Python 프로세스인지 확인
+                    if proc.info['name'] and 'python' in proc.info['name'].lower():
+                        cmdline = proc.info['cmdline']
+                        if cmdline and len(cmdline) > 1:
+                            # client.py가 실행 중인지 확인
+                            if 'client.py' in cmdline[1] or 'start_client.bat' in ' '.join(cmdline):
+                                print(f"⚠️ 다른 클라이언트 프로세스 발견: PID {proc.info['pid']}")
+                                return False
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            return True
         except Exception as e:
-            print(f"❌ MAC 주소 수집 중 예외 발생: {e}")
-            logging.error(f"MAC 주소 수집 중 예외 발생: {e}")
-            return None
+            print(f"⚠️ 프로세스 확인 중 오류: {e}")
+            return True  # 오류 시 실행 허용
     
     def register_with_server(self):
         """서버에 클라이언트를 등록합니다."""
-        # 이미 등록이 완료되었거나 진행 중이면 중복 등록 방지
-        if self.registration_completed:
-            print(f"⚠️ 이미 등록 완료: {self.registration_completed}")
-            return True
-            
         try:
             client_info = {
                 'name': self.client_name,
                 'ip_address': self.get_local_ip(),
                 'port': 8081
             }
-            
             print(f"📝 서버 등록 시도: {self.client_name} (IP: {client_info['ip_address']})")
-            
+            logging.info(f"서버 등록 시도: {self.client_name} (IP: {client_info['ip_address']})")
             response = requests.post(f"{self.server_url}/api/clients", json=client_info, timeout=10)
-            
             if response.status_code == 200:
                 client_data = response.json()
                 self.client_id = client_data['id']
                 logging.info(f"서버 등록 성공: ID {self.client_id}")
                 print(f"✅ 서버 등록 성공: ID {self.client_id}")
-                
-                # 등록 성공 후 MAC 주소 전송
-                self.send_mac_address_to_server()
-                
                 self.registration_completed = True
                 return True
             else:
                 logging.error(f"서버 등록 실패: {response.status_code} - {response.text}")
                 print(f"❌ 서버 등록 실패: {response.status_code}")
-                
-                # 등록 실패해도 MAC 주소는 무조건 전송
-                logging.info("등록 실패했지만 MAC 주소는 전송합니다.")
-                self.send_mac_address_to_server()
-                
                 return False
-                
         except Exception as e:
             logging.error(f"서버 등록 중 오류: {e}")
             print(f"❌ 서버 등록 중 오류: {e}")
-            
-            # 예외 발생해도 MAC 주소는 무조건 전송
-            logging.info("등록 중 오류가 발생했지만 MAC 주소는 전송합니다.")
-            self.send_mac_address_to_server()
-            
-            return False
-    
-    def send_mac_address_to_server(self):
-        """MAC 주소를 서버에 전송합니다."""
-        try:
-            print(f"🔍 MAC 주소 서버 전송 시작...")
-            logging.info("MAC 주소 서버 전송 시작")
-            
-            # MAC 주소 수집
-            mac_address = self.get_mac_address()
-            if not mac_address:
-                print(f"❌ MAC 주소 수집 실패")
-                logging.error("MAC 주소 수집 실패")
-                return False
-            
-            print(f"📤 MAC 주소 서버 전송 시도: {mac_address}")
-            logging.info(f"MAC 주소 서버 전송 시도: {mac_address}")
-            
-            # 서버에 MAC 주소 전송 (자동 수집 플래그)
-            response = requests.put(
-                f"{self.server_url}/api/clients/name/{self.client_name}/mac",
-                json={
-                    'mac_address': mac_address,
-                    'is_manual': False  # 자동 수집임을 명시
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                print(f"✅ MAC 주소 서버 전송 성공: {mac_address}")
-                logging.info(f"MAC 주소 서버 전송 성공: {mac_address}")
-                
-                # Socket.io 이벤트로도 전송
-                if self.sio.connected:
-                    self.sio.emit('mac_address_sent', {
-                        'clientName': self.client_name,
-                        'macAddress': mac_address,
-                        'isManual': False
-                    })
-                
-                return True
-            else:
-                print(f"❌ MAC 주소 서버 전송 실패: {response.status_code} - {response.text}")
-                logging.error(f"MAC 주소 서버 전송 실패: {response.status_code} - {response.text}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ MAC 주소 서버 전송 오류: {e}")
-            logging.error(f"MAC 주소 서버 전송 오류: {e}")
             return False
     
     def connect_socket(self):
         """Socket.io 연결을 설정합니다."""
         try:
-            # Socket.IO 연결 설정 (호환성 고려)
-            self.sio.connect(
-                self.server_url,
-                transports=['websocket', 'polling']  # 웹소켓 우선, 폴링 대체
-            )
+            print(f"🔌 소켓 연결 시도: {self.server_url}")
+            logging.info(f"소켓 연결 시도: {self.server_url}")
+            self.sio.connect(self.server_url)
             self.running = True
             print(f"✅ Socket.io 연결 성공: {self.client_name}")
-            logging.info("Socket.io 연결 성공")
+            logging.info(f"Socket.io 연결 성공: {self.client_name}")
             return True
         except Exception as e:
             print(f"❌ Socket.io 연결 실패: {e}")
@@ -310,170 +146,54 @@ class UECMSClient:
             return False
     
     def on_connect(self):
-        """Socket.io 연결 시 호출됩니다."""
         print(f"🔌 서버에 연결되었습니다: {self.client_name}")
-        logging.info("서버에 연결되었습니다")
-        
-        # Socket.io 등록만 수행
+        logging.info(f"서버에 연결되었습니다: {self.client_name}")
         self.sio.emit('register_client', {
             'name': self.client_name,
+            'ip_address': self.get_local_ip(),
             'clientType': 'python'
         })
-        print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
-        
-        # 현재 프로세스 상태 전송
-        self.send_current_process_status()
-        
-        # 하트비트 시작
+        print(f"📝 클라이언트 등록 요청 전송: {self.client_name} (IP: {self.get_local_ip()})")
+        logging.info(f"클라이언트 등록 요청 전송: {self.client_name} (IP: {self.get_local_ip()})")
         self.start_heartbeat()
-        
-        # 프로세스 모니터링 시작
-        self.start_process_monitor()
-    
-    def send_current_process_status(self):
-        """현재 실행 중인 프로세스 정보를 서버에 전송합니다."""
-        try:
-            # 현재 실행 중인 프로세스 정보 수집
-            process_status = self.check_process_status()
-            running_processes = []
-            
-            for process_name, process_info in self.running_processes.items():
-                running_processes.append({
-                    'name': process_name,
-                    'pid': process_info['pid'],
-                    'command': process_info['command'],
-                    'start_time': process_info['start_time']
-                })
-            
-            # 서버에 현재 상태 전송
-            self.sio.emit('current_process_status', {
-                'clientName': self.client_name,
-                'clientId': self.client_id,
-                'running_process_count': len(self.running_processes),
-                'running_processes': running_processes,
-                'status': 'running' if len(self.running_processes) > 0 else 'online',
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            print(f"📊 현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
-            logging.info(f"현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
-            
-        except Exception as e:
-            print(f"❌ 프로세스 상태 전송 실패: {e}")
-            logging.error(f"프로세스 상태 전송 실패: {e}")
-    
-    def on_disconnect(self):
-        """Socket.io 연결 해제 시 호출됩니다."""
-        print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
-        logging.info("서버와의 연결이 해제되었습니다")
-        
-        # 연결 해제되어도 클라이언트는 계속 실행 (하트비트는 계속 보냄)
-        print(f"⚠️ 연결이 끊어졌지만 클라이언트는 계속 실행됩니다. 하트비트를 계속 전송합니다.")
     
     def start_heartbeat(self):
-        """하트비트 전송을 시작합니다."""
         def heartbeat_loop():
-            heartbeat_count = 0
             while self.running:
                 try:
-                    heartbeat_count += 1
-                    current_time = datetime.now().strftime("%H:%M:%S")
-                    
-                    print(f"💓 하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {current_time}")
-                    logging.info(f"하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
-                    
-                    if self.sio.connected:
-                        # Socket.io 연결이 있으면 Socket.io로 하트비트 전송
-                        self.sio.emit('heartbeat', {
-                            'clientName': self.client_name,
-                            'ip_address': self.get_local_ip(),
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        print(f"💓 Socket.io 하트비트 전송 완료: {self.client_name}")
-                        logging.info(f"Socket.io 하트비트 전송 완료: {self.client_name}")
-                    else:
-                        # Socket.io 연결이 없으면 HTTP로 하트비트 전송 및 재등록 시도
-                        print(f"⚠️ Socket.io 연결 없음 - HTTP 하트비트 및 재등록 시도")
-                        logging.warning("Socket.io 연결 없음 - HTTP 하트비트 및 재등록 시도")
-                        
-                        # HTTP 하트비트 전송
-                        try:
-                            response = requests.post(
-                                f"{self.server_url}/api/heartbeat",
-                                json={
-                                    'clientName': self.client_name,
-                                    'ip_address': self.get_local_ip(),
-                                    'timestamp': datetime.now().isoformat()
-                                },
-                                timeout=5
-                            )
-                            
-                            if response.status_code == 200:
-                                print(f"✅ HTTP 하트비트 전송 성공: {self.client_name}")
-                                logging.info(f"HTTP 하트비트 전송 성공: {self.client_name}")
-                            else:
-                                print(f"⚠️ HTTP 하트비트 전송 실패: {response.status_code}")
-                                logging.warning(f"HTTP 하트비트 전송 실패: {response.status_code}")
-                                
-                                # 하트비트 실패 시 재등록 시도
-                                print(f"🔄 하트비트 실패로 인한 재등록 시도")
-                                logging.info("하트비트 실패로 인한 재등록 시도")
-                                self.register_with_server()
-                                
-                        except Exception as e:
-                            print(f"❌ HTTP 하트비트 전송 오류: {e}")
-                            logging.error(f"HTTP 하트비트 전송 오류: {e}")
-                            
-                            # HTTP 하트비트 실패 시 재등록 시도
-                            print(f"🔄 HTTP 하트비트 오류로 인한 재등록 시도")
-                            logging.info("HTTP 하트비트 오류로 인한 재등록 시도")
-                            self.register_with_server()
-                    
-                    time.sleep(5)  # 5초마다 하트비트
-                    
+                    ip = self.get_local_ip()
+                    print(f"[하트비트] 전송: 이름={self.client_name}, IP={ip}, 시간={datetime.now().isoformat()}")
+                    logging.info(f"[하트비트] 전송: 이름={self.client_name}, IP={ip}, 시간={datetime.now().isoformat()}")
+                    self.sio.emit('heartbeat', {
+                        'clientName': self.client_name,
+                        'ip_address': ip,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    time.sleep(30)
                 except Exception as e:
-                    logging.error(f"하트비트 전송 오류: {e}")
-                    print(f"❌ 하트비트 전송 오류: {e}")
-                    time.sleep(5)  # 오류 발생 시에도 5초 후 재시도
-        
+                    print(f"[하트비트] 전송 오류: {e}")
+                    logging.error(f"[하트비트] 전송 오류: {e}")
+                    time.sleep(5)
         import threading
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
-        print(f"💓 하트비트 스레드 시작 (5초 간격)")
-        logging.info(f"하트비트 스레드 시작 (5초 간격)")
     
-    def attempt_reconnect(self):
-        """서버 재연결을 시도합니다."""
+    def on_disconnect(self):
+        print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
+        logging.info(f"서버와의 연결이 해제되었습니다: {self.client_name}")
+    
+    def on_registration_failed(self, data):
+        """서버에서 등록 실패 알림을 받았을 때 호출됩니다."""
         try:
-            print(f"🔄 서버 재연결 시도: {self.client_name}")
-            logging.info(f"서버 재연결 시도: {self.client_name}")
-            
-            # 기존 연결 해제
-            if self.sio.connected:
-                self.sio.disconnect()
-            
-            # 잠시 대기
-            time.sleep(2)
-            
-            # 서버에 재등록
-            if self.register_with_server():
-                print(f"✅ 서버 재등록 성공: {self.client_name}")
-                logging.info(f"서버 재등록 성공: {self.client_name}")
-                
-                # Socket.io 재연결
-                if self.connect_socket():
-                    print(f"✅ Socket.io 재연결 성공: {self.client_name}")
-                    logging.info(f"Socket.io 재연결 성공: {self.client_name}")
-                else:
-                    print(f"⚠️ Socket.io 재연결 실패: {self.client_name}")
-                    logging.warning(f"Socket.io 재연결 실패: {self.client_name}")
-            else:
-                print(f"❌ 서버 재등록 실패: {self.client_name}")
-                logging.error(f"서버 재등록 실패: {self.client_name}")
-                
+            error_message = data.get('message', '등록 실패')
+            print(f"❌ 서버 등록 실패: {error_message}")
+            logging.error(f"서버 등록 실패: {error_message}")
+            self.registration_completed = False
+            self.running = False
+            self.stop()
         except Exception as e:
-            print(f"❌ 재연결 시도 중 오류: {e}")
-            logging.error(f"재연결 시도 중 오류: {e}")
+            print(f"❌ 서버 등록 실패 처리 중 오류: {e}")
+            logging.error(f"서버 등록 실패 처리 중 오류: {e}")
     
     def on_execute_command(self, data):
         """서버로부터 명령 실행 요청을 받습니다."""
@@ -654,25 +374,6 @@ class UECMSClient:
                 
         except Exception as e:
             logging.error(f"전원 액션 처리 중 오류: {e}")
-    
-    def on_request_mac_address(self, data):
-        """서버에서 MAC 주소 전송 요청을 받았을 때 호출됩니다."""
-        try:
-            client_name = data.get('clientName', '')
-            client_id = data.get('clientId')
-            message = data.get('message', '')
-            
-            if client_name != self.client_name:
-                return  # 다른 클라이언트용 요청이면 무시
-            
-            print(f"🔍 MAC 주소 전송 요청 수신: {message}")
-            logging.info(f"MAC 주소 전송 요청 수신: {message}")
-            
-            # MAC 주소 전송
-            self.send_mac_address_to_server()
-            
-        except Exception as e:
-            logging.error(f"MAC 주소 요청 처리 중 오류: {e}")
     
     def shutdown_system(self):
         """시스템을 종료합니다."""

@@ -37,13 +37,11 @@ function initializeDatabase(callback) {
     `CREATE TABLE IF NOT EXISTS clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT UNIQUE NOT NULL,
-      ip_address TEXT,
+      ip_address TEXT NOT NULL,
       port INTEGER DEFAULT 8081,
       status TEXT DEFAULT 'offline',
-      current_preset_id INTEGER DEFAULT NULL,
       last_seen DATETIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (current_preset_id) REFERENCES presets (id)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE TABLE IF NOT EXISTS groups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,46 +50,57 @@ function initializeDatabase(callback) {
     )`,
     `CREATE TABLE IF NOT EXISTS group_clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      group_id INTEGER NOT NULL,
-      client_id INTEGER NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
-      FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE,
-      UNIQUE(group_id, client_id)
+      group_id INTEGER,
+      client_id INTEGER,
+      FOREIGN KEY (group_id) REFERENCES groups (id),
+      FOREIGN KEY (client_id) REFERENCES clients (id)
     )`,
     `CREATE TABLE IF NOT EXISTS presets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      description TEXT,
-      target_group_id INTEGER,
-      client_commands TEXT,
-      is_active BOOLEAN DEFAULT 1,
+      command TEXT NOT NULL,
+      group_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (target_group_id) REFERENCES groups (id)
+      FOREIGN KEY (group_id) REFERENCES groups (id)
     )`,
     `CREATE TABLE IF NOT EXISTS execution_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       preset_id INTEGER,
-      client_id INTEGER,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (preset_id) REFERENCES presets (id),
-      FOREIGN KEY (client_id) REFERENCES clients (id)
-    )`,
-    `CREATE TABLE IF NOT EXISTS client_group_backup (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      client_name TEXT NOT NULL,
-      group_ids TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      client_name TEXT,
+      status TEXT,
+      result TEXT,
+      executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (preset_id) REFERENCES presets (id)
     )`,
     `CREATE TABLE IF NOT EXISTS client_power_info (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      client_id INTEGER NOT NULL,
-      mac_address TEXT NOT NULL,
-      updated_at DATETIME NOT NULL,
-      is_manual BOOLEAN NOT NULL,
-      FOREIGN KEY (client_id) REFERENCES clients (id)
-    )`
+      client_id INTEGER UNIQUE,
+      mac_address VARCHAR(17),
+      is_manual BOOLEAN DEFAULT false,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (client_id) REFERENCES clients (id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS ip_mac_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip_address TEXT NOT NULL,
+      mac_address VARCHAR(17) NOT NULL,
+      is_manual BOOLEAN DEFAULT false,
+      last_used DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS ip_name_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip_address TEXT NOT NULL,
+      user_modified_name TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      last_used DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_clients_ip ON clients(ip_address)`,
+    `CREATE INDEX IF NOT EXISTS idx_ip_mac_history_ip ON ip_mac_history(ip_address)`,
+    `CREATE INDEX IF NOT EXISTS idx_ip_mac_history_mac ON ip_mac_history(mac_address)`,
+    `CREATE INDEX IF NOT EXISTS idx_ip_name_history_ip ON ip_name_history(ip_address)`
   ];
 
   let completed = 0;
@@ -171,7 +180,7 @@ app.get('/api/clients', (req, res) => {
       c.*,
       cpi.mac_address
     FROM clients c
-    LEFT JOIN client_power_info cpi ON c.id = cpi.client_id
+    LEFT JOIN (SELECT client_id, mac_address, updated_at FROM client_power_info cpi1 WHERE updated_at = (SELECT MAX(updated_at) FROM client_power_info cpi2 WHERE cpi2.client_id = cpi1.client_id)) cpi ON c.id = cpi.client_id
     ORDER BY c.id
   `;
   
@@ -230,24 +239,54 @@ app.put('/api/clients/:id', (req, res) => {
     return;
   }
 
-  db.run(
-    'UPDATE clients SET name = ?, ip_address = ?, port = ? WHERE id = ?',
-    [name, ip_address, port, id],
-    function (err) {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      db.get('SELECT * FROM clients WHERE id = ?', [id], (err, row) => {
+  // 먼저 기존 클라이언트 정보 조회
+  db.get('SELECT * FROM clients WHERE id = ?', [id], (err, existingClient) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    if (!existingClient) {
+      res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
+      return;
+    }
+
+    // 클라이언트 정보 업데이트
+    db.run(
+      'UPDATE clients SET name = ?, ip_address = ?, port = ? WHERE id = ?',
+      [name, ip_address, port, id],
+      function (err) {
         if (err) {
           res.status(500).json({ error: err.message });
           return;
         }
-        io.emit('client_updated', row);
-        res.json(row);
-      });
-    }
-  );
+        
+        // 사용자가 수정한 이름을 IP 주소 히스토리에 저장 (삭제된 클라이언트 복구용)
+        if (name !== existingClient.name) {
+          db.run(
+            'INSERT OR REPLACE INTO ip_name_history (ip_address, user_modified_name, original_name, last_used) VALUES (?, ?, ?, datetime("now"))',
+            [ip_address, name, existingClient.name],
+            function(err2) {
+              if (err2) {
+                console.error(`⚠️ IP 주소 이름 히스토리 저장 실패: ${ip_address} -> ${name} - ${err2.message}`);
+              } else {
+                console.log(`✅ IP 주소 이름 히스토리 저장 완료: ${ip_address} -> ${name} (원래: ${existingClient.name})`);
+              }
+            }
+          );
+        }
+        
+        db.get('SELECT * FROM clients WHERE id = ?', [id], (err, row) => {
+          if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          io.emit('client_updated', row);
+          res.json(row);
+        });
+      }
+    );
+  });
 });
 
 app.delete('/api/clients/:id', (req, res) => {
@@ -1084,6 +1123,96 @@ app.get('/api/presets/:id/status', (req, res) => {
   });
 });
 
+// MAC 주소 업데이트 API (ID로)
+app.put('/api/clients/:id/mac-address', (req, res) => {
+  const { id } = req.params;
+  const { mac_address, is_manual = false } = req.body;
+  
+  if (!mac_address) {
+    res.status(400).json({ error: 'MAC 주소는 필수입니다.' });
+    return;
+  }
+  
+  // 클라이언트 존재 확인
+  db.get('SELECT id, name FROM clients WHERE id = ?', [id], (err, client) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    if (!client) {
+      res.status(404).json({ error: '클라이언트를 찾을 수 없습니다.' });
+      return;
+    }
+    
+    // 기존 MAC 주소 정보 확인
+    db.get('SELECT mac_address, is_manual FROM client_power_info WHERE client_id = ?', [client.id], (err, existing) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      
+      // 우선순위 로직: 수동 입력이 있으면 자동 수집으로 덮어쓰지 않음
+      if (existing && existing.is_manual && !is_manual) {
+        console.log(`⚠️ 수동 입력된 MAC 주소가 있어 자동 수집 MAC 주소 무시: ${client.name} (수동: ${existing.mac_address}, 자동: ${mac_address})`);
+        res.json({ 
+          success: true, 
+          message: '수동 입력된 MAC 주소가 있어 자동 수집 MAC 주소를 무시합니다.',
+          client_id: client.id,
+          mac_address: existing.mac_address,
+          is_manual: true
+        });
+        return;
+      }
+      
+      // MAC 주소 저장 또는 업데이트
+      const isManualFlag = is_manual ? 1 : 0;
+      db.run(
+        'INSERT OR REPLACE INTO client_power_info (client_id, mac_address, updated_at, is_manual) VALUES (?, ?, datetime("now"), ?)',
+        [client.id, mac_address, isManualFlag],
+        function(err) {
+          if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          
+          // IP 주소 히스토리에도 저장 (삭제된 클라이언트 복구용)
+          db.run(
+            'INSERT OR REPLACE INTO ip_mac_history (ip_address, mac_address, is_manual, last_used) VALUES (?, ?, ?, datetime("now"))',
+            [client.ip_address, mac_address, isManualFlag],
+            function(err2) {
+              if (err2) {
+                console.error(`⚠️ IP 주소 히스토리 저장 실패: ${client.ip_address} -> ${mac_address} - ${err2.message}`);
+              } else {
+                console.log(`✅ IP 주소 히스토리 저장 완료: ${client.ip_address} -> ${mac_address}`);
+              }
+            }
+          );
+          
+          const actionType = is_manual ? '수동' : '자동';
+          console.log(`✅ ${actionType} MAC 주소 설정 완료: ${client.name} (ID: ${client.id}) -> ${mac_address}`);
+          
+          // Socket.io 이벤트 전송 (웹 UI 실시간 업데이트)
+          io.emit('mac_address_updated', {
+            clientId: client.id,
+            clientName: client.name,
+            macAddress: mac_address,
+            isManual: is_manual
+          });
+          
+          res.json({ 
+            success: true, 
+            message: 'MAC 주소가 업데이트되었습니다.',
+            client_id: client.id,
+            mac_address: mac_address,
+            is_manual: is_manual
+          });
+        }
+      );
+    });
+  });
+});
+
 // MAC 주소 업데이트 API (이름으로)
 app.put('/api/clients/name/:name/mac', (req, res) => {
   const { name } = req.params;
@@ -1094,8 +1223,8 @@ app.put('/api/clients/name/:name/mac', (req, res) => {
     return;
   }
   
-  // 클라이언트 ID 조회
-  db.get('SELECT id FROM clients WHERE name = ?', [name], (err, client) => {
+  // 클라이언트 ID와 IP 주소 조회
+  db.get('SELECT id, ip_address FROM clients WHERE name = ?', [name], (err, client) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -1137,13 +1266,26 @@ app.put('/api/clients/name/:name/mac', (req, res) => {
             return;
           }
           
+          // IP 주소 히스토리에도 저장 (삭제된 클라이언트 복구용)
+          db.run(
+            'INSERT OR REPLACE INTO ip_mac_history (ip_address, mac_address, is_manual, last_used) VALUES (?, ?, ?, datetime("now"))',
+            [client.ip_address, mac_address, isManualFlag],
+            function(err2) {
+              if (err2) {
+                console.error(`⚠️ IP 주소 히스토리 저장 실패: ${client.ip_address} -> ${mac_address} - ${err2.message}`);
+              } else {
+                console.log(`✅ IP 주소 히스토리 저장 완료: ${client.ip_address} -> ${mac_address}`);
+              }
+            }
+          );
+          
           const actionType = is_manual ? '수동' : '자동';
           console.log(`✅ ${actionType} MAC 주소 설정 완료: ${name} (ID: ${client.id}) -> ${mac_address}`);
           
           // Socket.io 이벤트 전송 (웹 UI 실시간 업데이트)
           io.emit('mac_address_updated', {
             clientId: client.id,
-            clientName: name,
+            clientName: client.name,
             macAddress: mac_address,
             isManual: is_manual
           });
@@ -1295,185 +1437,142 @@ function normalizeIP(ip) {
 io.on('connection', (socket) => {
   console.log('클라이언트 연결 시도:', socket.id);
 
-  // 클라이언트 등록 (이름 기반으로 기존 클라이언트 찾기)
+  // 클라이언트 등록 (IP 주소 기반으로 기존 클라이언트 찾기)
   socket.on('register_client', (data) => {
-    const { name, clientType = 'python' } = data;
-    const clientIP = normalizeIP(socket.handshake.address || '127.0.0.1');
+    const { name, clientType = 'python', ip_address } = data;
+    // 클라이언트가 보낸 ip_address가 있으면 우선 사용, 없으면 소켓 주소 사용
+    const clientIP = ip_address || normalizeIP(socket.handshake.address || '127.0.0.1');
     
-    socket.clientName = name;
     socket.clientType = clientType;
+    socket.clientName = name; // 소켓에 클라이언트 이름 저장
     
     console.log(`📝 클라이언트 등록 시도: ${name} (IP: ${clientIP})`);
     
-    // INSERT 전에 같은 이름의 클라이언트 row 삭제
-    db.run('DELETE FROM clients WHERE name = ?', [name], (err) => {
+    // 기존에 같은 IP가 있으면 기존 name/id를 재사용
+    db.get('SELECT * FROM clients WHERE ip_address = ?', [clientIP], (err, existingClient) => {
       if (err) {
-        console.log(`❌ 클라이언트 삭제 실패: ${name} - ${err.message}`);
-        socket.emit('registration_failed', { reason: 'DB 삭제 실패' });
+        console.error(`❌ 클라이언트 조회 실패: ${err.message}`);
+        socket.emit('registration_failed', { reason: 'DB 조회 실패' });
         return;
       }
-      // 이후 INSERT
-      db.run(
-        'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
-        [name, clientIP, 8081, 'online'],
-        function(err) {
-          if (err) {
-            console.log(`❌ 새 클라이언트 등록 실패: ${name} - ${err.message}`);
-            return;
+      if (existingClient) {
+        // 기존 클라이언트 정보 갱신
+        socket.clientName = existingClient.name;
+        console.log(`✅ 기존 클라이언트 발견: ${existingClient.name} (ID: ${existingClient.id})`);
+        
+        // 소켓 연결 정보 저장 (중요!)
+        connectedClients.set(existingClient.name, socket);
+        console.log(`🔗 소켓 연결 정보 저장: ${existingClient.name} -> ${socket.id}`);
+        
+        db.run(
+          'UPDATE clients SET status = ?, last_seen = ? WHERE id = ?',
+          ['online', new Date().toISOString(), existingClient.id],
+          function(err) {
+            if (err) {
+              console.error(`❌ 클라이언트 업데이트 실패: ${existingClient.name} - ${err.message}`);
+              socket.emit('registration_failed', { reason: 'DB 업데이트 실패' });
+              return;
+            }
+            const updatedClient = { ...existingClient, status: 'online', last_seen: new Date().toISOString() };
+            io.emit('client_updated', updatedClient);
+            io.emit('client_status_changed', { id: existingClient.id, name: existingClient.name, status: 'online' });
+            console.log(`✅ 기존 클라이언트 갱신: ${existingClient.name} (ID: ${existingClient.id})`);
           }
-          const newClientId = this.lastID;
-          console.log(`✅ 새로운 클라이언트 Socket.io 등록 완료: ${name} (ID: ${newClientId})`);
-          const newClient = { id: newClientId, name: name, ip_address: clientIP, port: 8081, status: 'online' };
-          connectedClients.set(name, socket);
-          io.emit('client_added', newClient);
-          io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
-          // 새로 등록된 클라이언트에게 MAC 주소 전송 요청
-          console.log(`🔍 새로 등록된 클라이언트에게 MAC 주소 전송 요청: ${name}`);
-          socket.emit('request_mac_address', {
-            clientName: name,
-            clientId: newClient.id,
-            message: '새 클라이언트 등록 - MAC 주소 전송 요청'
-          });
-        }
-      );
+        );
+      } else {
+        // 없으면 새로 등록
+        socket.clientName = name;
+        console.log(`🆕 새로운 클라이언트 등록: ${name} (IP: ${clientIP})`);
+        
+        db.run(
+          'INSERT INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
+          [name, clientIP, 8081, 'online'],
+          function(err) {
+            if (err) {
+              console.log(`❌ 새 클라이언트 등록 실패: ${name} - ${err.message}`);
+              socket.emit('registration_failed', { reason: 'DB 등록 실패' });
+              return;
+            }
+            const newClientId = this.lastID;
+            const newClient = { id: newClientId, name: name, ip_address: clientIP, port: 8081, status: 'online' };
+            
+            // 소켓 연결 정보 저장 (중요!)
+            connectedClients.set(name, socket);
+            console.log(`🔗 소켓 연결 정보 저장: ${name} -> ${socket.id}`);
+            
+            io.emit('client_added', newClient);
+            io.emit('client_status_changed', { id: newClient.id, name, status: 'online' });
+            console.log(`✅ 새 클라이언트 등록 완료: ${name} (ID: ${newClientId})`);
+          }
+        );
+      }
     });
   });
   
   // 하트비트 응답
   socket.on('heartbeat', (data) => {
-    const { name, clientName, ip_address, status, running_process_count, running_processes, timestamp } = data;
-    const clientNameToUse = name || clientName; // name이 없으면 clientName 사용
+    const { ip_address, timestamp } = data;
     const now = new Date().toISOString();
     const timeStr = new Date().toLocaleTimeString();
-    // 클라이언트가 보낸 ip_address가 있으면 우선 사용
+    // 클라이언트가 보낸 ip_address가 있으면 우선 사용, 없으면 소켓 주소 사용
     const clientIP = ip_address || normalizeIP(socket.handshake.address || '127.0.0.1');
     
-    console.log(`💓 하트비트 수신: ${clientNameToUse} (IP: ${clientIP}, 시간: ${timeStr}, 소켓 ID: ${socket.id})`);
-    if (status) {
-      console.log(`📊 클라이언트 상태: ${status} (실행 중 프로세스: ${running_process_count || 0}개)`);
-    }
+    console.log(`💓 하트비트 수신: IP=${clientIP}, 시간=${timeStr}`);
     
-    // 클라이언트 이름이 없으면 처리하지 않음
-    if (!clientNameToUse) {
-      console.log(`⚠️ 하트비트에서 클라이언트 이름이 없음 - 무시`);
-      return;
-    }
-    
-    // 먼저 클라이언트가 데이터베이스에 있는지 확인
-    db.get('SELECT * FROM clients WHERE name = ?', [clientNameToUse], (err, existingClient) => {
+    // IP 주소로 기존 클라이언트 찾기
+    db.get('SELECT * FROM clients WHERE ip_address = ?', [clientIP], (err, existingClient) => {
       if (err) {
-        console.error(`❌ 클라이언트 조회 실패: ${clientNameToUse} - ${err.message}`);
+        console.error(`❌ 클라이언트 조회 실패: IP ${clientIP} - ${err.message}`);
         return;
       }
       
       if (existingClient) {
-        // 기존 클라이언트가 있으면 상태 업데이트
-        console.log(`✅ 기존 클라이언트 발견: ${clientNameToUse} (ID: ${existingClient.id}, 상태: ${existingClient.status})`);
+        // 기존 클라이언트 정보 업데이트
+        console.log(`✅ 기존 클라이언트 하트비트: ${existingClient.name} (ID: ${existingClient.id}, IP: ${clientIP})`);
         
-        // 상태 정보가 있으면 업데이트
-        const updateStatus = status || 'online';
-        const updateData = [updateStatus, now, clientNameToUse];
+        // 소켓 연결 정보 저장
+        connectedClients.set(existingClient.name, socket);
+        socket.clientName = existingClient.name;
         
         db.run(
-          'UPDATE clients SET status = ?, last_seen = ? WHERE name = ?',
-          updateData,
-          (err) => {
-            if (!err) {
-              console.log(`💓 하트비트 업데이트 완료: ${clientNameToUse} (상태: ${updateStatus}, 시간: ${timeStr})`);
-              
-              // 상태가 변경되었으면 이벤트 전송
-              if (existingClient.status !== updateStatus) {
-                io.emit('client_status_changed', { 
-                  id: existingClient.id,
-                  name: clientNameToUse, 
-                  status: updateStatus,
-                  running_process_count: running_process_count || 0,
-                  running_processes: running_processes || []
-                });
-                console.log(`📡 클라이언트 상태 변경 이벤트 전송: ${clientNameToUse} -> ${updateStatus}`);
-              }
-            } else {
-              console.error(`❌ 하트비트 업데이트 실패: ${clientNameToUse} - ${err.message}`);
-            }
-          }
-        );
-      } else {
-        // 클라이언트가 데이터베이스에 없으면 자동으로 재등록 - 중복 체크 강화
-        console.log(`🔄 삭제된 클라이언트 자동 재등록 시작: ${clientNameToUse} (IP: ${clientIP}, 소켓 ID: ${socket.id})`);
-        
-        // INSERT OR IGNORE를 사용하여 중복 방지
-        db.run(
-          'INSERT OR IGNORE INTO clients (name, ip_address, port, status) VALUES (?, ?, ?, ?)',
-          [clientNameToUse, clientIP, 8081, 'online'],
+          'UPDATE clients SET status = ?, last_seen = ? WHERE id = ?',
+          ['online', new Date().toISOString(), existingClient.id],
           function(err) {
             if (err) {
-              console.log(`❌ 클라이언트 자동 재등록 실패: ${clientNameToUse} - ${err.message}`);
+              console.error(`❌ 클라이언트 업데이트 실패: ${existingClient.name} - ${err.message}`);
               return;
             }
             
-            // INSERT가 성공했는지 확인 (중복이 아닌 경우)
-            if (this.changes > 0) {
-              const newClientId = this.lastID;
-              console.log(`✅ 클라이언트 자동 재등록 완료: ${clientNameToUse} (ID: ${newClientId})`);
-              
-              const newClient = { 
-                id: newClientId,
-                name: clientNameToUse, 
-                ip_address: clientIP, 
-                port: 8081, 
-                status: 'online' 
-              };
-              
-              connectedClients.set(clientNameToUse, socket);
-              io.emit('client_added', newClient);
-              io.emit('client_status_changed', { id: newClient.id, name: clientNameToUse, status: 'online' });
-              
-              // 새로 등록된 클라이언트에게 MAC 주소 전송 요청
-              console.log(`🔍 새로 등록된 클라이언트에게 MAC 주소 전송 요청: ${clientNameToUse}`);
-              socket.emit('request_mac_address', {
-                clientName: clientNameToUse,
-                clientId: newClient.id,
-                message: '새 클라이언트 등록 - MAC 주소 전송 요청'
-              });
-            } else {
-              // 중복이 발생한 경우 기존 클라이언트 정보로 처리
-              console.log(`⚠️ 중복 클라이언트 감지 - 기존 클라이언트 정보 사용: ${clientNameToUse}`);
-              
-              db.get('SELECT * FROM clients WHERE name = ?', [clientNameToUse], (err, existingClient) => {
-                if (err) {
-                  console.log(`❌ 기존 클라이언트 조회 실패: ${clientNameToUse} - ${err.message}`);
-                  return;
-                }
-                
-                // 기존 클라이언트 상태 업데이트
-                db.run(
-                  'UPDATE clients SET ip_address = ?, status = ?, last_seen = ? WHERE id = ?',
-                  [clientIP, 'online', now, existingClient.id],
-                  (err) => {
-                    if (!err) {
-                      connectedClients.set(clientNameToUse, socket);
-                      console.log(`✅ 중복 클라이언트 정보 업데이트 완료: ${clientNameToUse} (ID: ${existingClient.id})`);
-                      
-                      const updatedClient = { ...existingClient, ip_address: clientIP, status: 'online' };
-                      io.emit('client_updated', updatedClient);
-                      io.emit('client_status_changed', { id: existingClient.id, name: clientNameToUse, status: 'online' });
-                      
-                      // 재등록된 클라이언트에게 MAC 주소 전송 요청
-                      console.log(`🔍 재등록된 클라이언트에게 MAC 주소 전송 요청: ${clientNameToUse}`);
-                      socket.emit('request_mac_address', {
-                        clientName: clientNameToUse,
-                        clientId: existingClient.id,
-                        message: '클라이언트 재등록 - MAC 주소 전송 요청'
-                      });
-                    } else {
-                      console.log(`❌ 중복 클라이언트 정보 업데이트 실패: ${clientNameToUse} - ${err.message}`);
-                    }
-                  }
-                );
-              });
-            }
+            console.log(`✅ 클라이언트 하트비트 업데이트: ${existingClient.name} (ID: ${existingClient.id})`);
+            
+            // 웹 UI에 업데이트 알림
+            const updatedClient = { 
+              ...existingClient, 
+              status: 'online', 
+              last_seen: new Date().toISOString()
+            };
+            io.emit('client_updated', updatedClient);
+            io.emit('client_status_changed', { id: existingClient.id, name: existingClient.name, status: 'online' });
+            
+            // 하트비트에 대한 응답 전송 (연결 상태 확인 완료)
+            socket.emit('heartbeat_response', {
+              status: 'ok',
+              timestamp: new Date().toISOString(),
+              message: '하트비트 수신 완료'
+            });
+            console.log(`📤 하트비트 응답 전송: ${existingClient.name}`);
           }
         );
+      } else {
+        // 클라이언트가 등록되지 않았으면 무시 (등록은 register_client에서만 처리)
+        console.log(`⚠️ 하트비트에서 등록되지 않은 클라이언트: IP ${clientIP} - 무시`);
+        
+        // 등록되지 않은 클라이언트에도 응답 전송
+        socket.emit('heartbeat_response', {
+          status: 'error',
+          timestamp: new Date().toISOString(),
+          message: '등록되지 않은 클라이언트'
+        });
       }
     });
   });
@@ -1590,17 +1689,25 @@ io.on('connection', (socket) => {
         connectedClients.delete(socket.clientName);
         console.log(`🗑️ 클라이언트 소켓 제거: ${socket.clientName}`);
         
-        // 즉시 오프라인으로 처리
-        db.run(
-          'UPDATE clients SET status = "offline" WHERE name = ?',
-          [socket.clientName],
-          (err) => {
-            if (!err) {
-              console.log(`🔄 ${socket.clientName} 즉시 오프라인으로 변경`);
-              io.emit('client_status_changed', { name: socket.clientName, status: 'offline' });
-            }
+        // 즉시 오프라인으로 처리하지 않고 일정 시간 대기
+        setTimeout(() => {
+          // 대기 시간 후에도 소켓이 없으면 오프라인으로 처리
+          const checkSocket = connectedClients.get(socket.clientName);
+          if (!checkSocket || !checkSocket.connected) {
+            db.run(
+              'UPDATE clients SET status = "offline" WHERE name = ?',
+              [socket.clientName],
+              (err) => {
+                if (!err) {
+                  console.log(`🔄 ${socket.clientName} 오프라인으로 변경 (연결 복구 실패)`);
+                  io.emit('client_status_changed', { name: socket.clientName, status: 'offline' });
+                }
+              }
+            );
+          } else {
+            console.log(`✅ ${socket.clientName} 연결 복구됨 - 오프라인 처리 취소`);
           }
-        );
+        }, 5000); // 5초 대기
       } else {
         console.log(`⚠️ 다른 소켓이 이미 등록되어 있음 - 소켓 제거 건너뜀: ${socket.clientName}`);
       }
@@ -1745,13 +1852,13 @@ setInterval(() => {
         });
       } else {
         console.log(`⚠️ ${client.name} 소켓이 없거나 연결되지 않음 - 오프라인으로 처리`);
-        // 소켓이 없으면 바로 오프라인으로 처리
+        // 소켓이 없으면 오프라인으로 처리하되 삭제하지 않음
         db.run(
           'UPDATE clients SET status = "offline" WHERE name = ?',
           [client.name],
           (err) => {
             if (!err) {
-              console.log(`🔄 ${client.name} 즉시 오프라인으로 변경`);
+              console.log(`🔄 ${client.name} 오프라인으로 변경 (삭제하지 않음)`);
               io.emit('client_status_changed', { name: client.name, status: 'offline' });
             }
           }
@@ -1761,9 +1868,9 @@ setInterval(() => {
   });
 }, 15000); // 15초마다
 
-// 연결 확인에 응답하지 않는 클라이언트를 오프라인으로 처리 (30초 후)
+// 연결 확인에 응답하지 않는 클라이언트를 오프라인으로 처리 (60초 후로 연장)
 setInterval(() => {
-  const cutoffTime = new Date(Date.now() - 30000); // 30초 전
+  const cutoffTime = new Date(Date.now() - 60000); // 60초 전으로 연장
   console.log(`⏰ 오프라인 처리 기준 시간: ${cutoffTime.toISOString()}`);
   
   // 먼저 오프라인으로 변경될 클라이언트들을 조회
@@ -1792,7 +1899,7 @@ setInterval(() => {
         });
         
         if (clientsToOffline.length > 0) {
-          // 오프라인으로 변경
+          // 오프라인으로 변경 (삭제하지 않음)
           const clientNames = clientsToOffline.map(c => c.name);
           const placeholders = clientNames.map(() => '?').join(',');
           
@@ -1801,7 +1908,7 @@ setInterval(() => {
             clientNames,
             function(err) {
               if (!err && this.changes > 0) {
-                console.log(`🔄 ${this.changes}개 클라이언트를 오프라인으로 변경`);
+                console.log(`🔄 ${this.changes}개 클라이언트를 오프라인으로 변경 (삭제하지 않음)`);
                 io.emit('clients_offline_updated');
               }
             }
@@ -1814,7 +1921,7 @@ setInterval(() => {
       }
     }
   );
-}, 30000); // 30초마다
+}, 60000); // 60초마다로 연장
 
 // 기본 라우트
 app.get('/', (req, res) => {

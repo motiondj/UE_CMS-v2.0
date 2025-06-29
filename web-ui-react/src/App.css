@@ -1242,4 +1242,61 @@ textarea.form-input {
 
 [data-theme="dark"] .preset-status-info {
     background-color: #334155;
+}
+
+/* MAC 주소 수정 스타일 */
+.mac-address-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mac-display-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mac-value {
+    font-family: 'Courier New', monospace;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.mac-edit-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.mac-input {
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    width: 100%;
+    max-width: 200px;
+}
+
+.mac-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px var(--primary-color-alpha);
+}
+
+.mac-edit-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+.btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: 3px;
 } 

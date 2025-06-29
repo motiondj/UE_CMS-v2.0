@@ -2,13 +2,17 @@ import React, { useState, useEffect } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
 
-const ClientDetailModal = ({ client, onClose }) => {
+const ClientDetailModal = ({ client, onClose, onClientUpdated }) => {
   const [executionHistory, setExecutionHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [macAddress, setMacAddress] = useState(client.mac_address || '');
+  const [isEditingMac, setIsEditingMac] = useState(false);
+  const [savingMac, setSavingMac] = useState(false);
 
   useEffect(() => {
     loadExecutionHistory();
-  }, [client.id]);
+    loadMacAddress();
+  }, [client.id, client.mac_address]);
 
   const loadExecutionHistory = async () => {
     try {
@@ -22,6 +26,84 @@ const ClientDetailModal = ({ client, onClose }) => {
       console.error('실행 히스토리 로드 실패:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMacAddress = async () => {
+    // MAC 주소가 없으면 API에서 직접 조회
+    if (!client.mac_address) {
+      try {
+        console.log('🔍 MAC 주소 API 조회 시도:', client.name);
+        const response = await fetch(`${API_BASE}/api/clients`);
+        if (response.ok) {
+          const clients = await response.json();
+          const currentClient = clients.find(c => c.id === client.id);
+          if (currentClient && currentClient.mac_address) {
+            console.log('✅ MAC 주소 API 조회 성공:', currentClient.mac_address);
+            setMacAddress(currentClient.mac_address);
+          } else {
+            console.log('⚠️ MAC 주소가 설정되지 않음');
+            setMacAddress('');
+          }
+        }
+      } catch (error) {
+        console.error('MAC 주소 조회 실패:', error);
+      }
+    } else {
+      console.log('✅ 기존 MAC 주소 사용:', client.mac_address);
+      setMacAddress(client.mac_address);
+    }
+  };
+
+  const saveMacAddress = async () => {
+    if (!macAddress.trim()) {
+      alert('MAC 주소를 입력해주세요.');
+      return;
+    }
+
+    // MAC 주소 형식 검증 (XX:XX:XX:XX:XX:XX 또는 XX-XX-XX-XX-XX-XX)
+    const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+    if (!macRegex.test(macAddress)) {
+      alert('올바른 MAC 주소 형식을 입력해주세요. (예: 00:11:22:33:44:55)');
+      return;
+    }
+
+    try {
+      setSavingMac(true);
+      const response = await fetch(`${API_BASE}/api/clients/name/${client.name}/mac`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          mac_address: macAddress,
+          is_manual: true
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('MAC 주소 저장 성공:', result);
+        setIsEditingMac(false);
+        
+        // 부모 컴포넌트에 업데이트 알림
+        if (onClientUpdated) {
+          onClientUpdated({
+            ...client,
+            mac_address: macAddress
+          });
+        }
+        
+        alert('MAC 주소가 성공적으로 저장되었습니다.');
+      } else {
+        const error = await response.json();
+        alert(`MAC 주소 저장 실패: ${error.error || '알 수 없는 오류'}`);
+      }
+    } catch (error) {
+      console.error('MAC 주소 저장 중 오류:', error);
+      alert('MAC 주소 저장 중 오류가 발생했습니다.');
+    } finally {
+      setSavingMac(false);
     }
   };
 
@@ -102,6 +184,54 @@ const ClientDetailModal = ({ client, onClose }) => {
                 <span className="info-value">
                   {client.last_seen ? formatDate(client.last_seen) : '없음'}
                 </span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">MAC 주소:</span>
+                <div className="mac-address-section">
+                  {isEditingMac ? (
+                    <div className="mac-edit-section">
+                      <input
+                        type="text"
+                        value={macAddress}
+                        onChange={(e) => setMacAddress(e.target.value)}
+                        placeholder="00:11:22:33:44:55"
+                        className="mac-input"
+                        disabled={savingMac}
+                      />
+                      <div className="mac-edit-buttons">
+                        <button 
+                          className="btn btn-primary btn-sm"
+                          onClick={saveMacAddress}
+                          disabled={savingMac}
+                        >
+                          {savingMac ? '저장 중...' : '저장'}
+                        </button>
+                        <button 
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => {
+                            setIsEditingMac(false);
+                            setMacAddress(macAddress);
+                          }}
+                          disabled={savingMac}
+                        >
+                          취소
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mac-display-section">
+                      <span className="mac-value">
+                        {macAddress || '설정되지 않음'}
+                      </span>
+                      <button 
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setIsEditingMac(true)}
+                      >
+                        수정
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>

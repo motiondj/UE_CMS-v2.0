@@ -14,7 +14,8 @@ from datetime import datetime
 import logging
 import tkinter as tk
 from tkinter import messagebox
-import wmi
+import queue
+import psutil
 
 # pystray를 선택적으로 import
 try:
@@ -35,982 +36,997 @@ logging.basicConfig(
     ]
 )
 
-class SyncChecker:
-    """SyncGuard의 핵심 기능을 Python으로 포팅한 클래스"""
-    
-    class SyncStatus:
-        UNKNOWN = "Unknown"
-        MASTER = "Master"
-        SLAVE = "Slave"
-        ERROR = "Error"
-    
-    def __init__(self):
-        self.wmi_connection = None
-        self.last_status = self.SyncStatus.UNKNOWN
+print("=== client_tray.py 시작 ===")
+
+try:
+    class UECMSTrayClient:
+        def __init__(self, server_url="http://localhost:8000"):
+            # 기본 서버 URL 설정 (start()에서 config 파일 로드)
+            self.server_url = server_url
+            
+            self.client_name = self.get_computer_name()
+            self.client_id = None
+            self.sio = socketio.Client()
+            self.running = False
+            self.current_preset_id = None
+            
+            # 실제 네트워크 IP 캐시
+            self.cached_ip = None
+            
+            # 프로세스 모니터링을 위한 변수들
+            self.running_processes = {}
+            self.process_monitor_thread = None
+            
+            # 트레이 아이콘 관련
+            self.icon = None
+            self.root = None
+            
+            # 중복 실행 방지를 위한 프로세스 확인
+            if not self.check_duplicate_process():
+                print(f"❌ 이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
+                logging.error(f"이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
+                sys.exit(1)
+            
+            # Socket.io 이벤트 핸들러 등록
+            print("🔧 Socket.io 이벤트 핸들러 등록 중...")
+            self.sio.on('connect', self.on_connect)
+            self.sio.on('disconnect', self.on_disconnect)
+            self.sio.on('registration_failed', self.on_registration_failed)
+            self.sio.on('execute_command', self.on_execute_command)
+            self.sio.on('connection_check', self.on_connection_check)
+            self.sio.on('stop_command', self.on_stop_command)
+            self.sio.on('heartbeat_response', self.on_heartbeat_response)
+            
+            # 모든 이벤트를 받기 위한 범용 핸들러 추가
+            self.sio.on('*', self.on_any_event)
+            print("✅ Socket.io 이벤트 핸들러 등록 완료")
+            
+            logging.info(f"UE CMS 클라이언트 초기화 완료: {self.client_name}")
+            print(f"🔧 서버 설정: {self.server_url}")
+            
+            self.tk_event_queue = queue.Queue()
         
-        try:
-            self.wmi_connection = wmi.WMI(namespace="root\\CIMV2\\NV")
-            logging.info("WMI 연결 성공")
-        except Exception as e:
-            logging.error(f"WMI 연결 실패: {e}")
-            self.wmi_connection = None
-    
-    def get_sync_status(self):
-        """쿼드로 싱크 상태를 확인합니다."""
-        if not self.wmi_connection:
-            logging.warning("WMI를 사용할 수 없어 싱크 상태 확인을 건너뜁니다.")
-            return self.SyncStatus.UNKNOWN
+        def get_computer_name(self):
+            """컴퓨터의 실제 호스트명을 가져옵니다."""
+            try:
+                return socket.gethostname()
+            except:
+                return f"Client_{os.getpid()}"
         
-        try:
-            sync_devices = self.wmi_connection.SyncTopology()
-            
-            if not sync_devices:
-                logging.warning("SyncTopology WMI 클래스에서 Sync 디바이스를 찾을 수 없습니다.")
-                return self.SyncStatus.SLAVE
-            
-            found_master = False
-            found_slave = False
-            found_error = False
-            
-            for device in sync_devices:
-                try:
-                    display_sync_state = int(device.displaySyncState)
-                    device_id = int(device.id)
-                    is_display_masterable = bool(device.isDisplayMasterable)
-                    
-                    logging.debug(f"Sync 디바이스: ID={device_id}, State={display_sync_state}, Masterable={is_display_masterable}")
-                    
-                    # displaySyncState 값으로 동기화 설정 상태 판단
-                    # 0 = UnSynced (동기화 설정 안됨) - 빨강
-                    # 1 = Slave (슬레이브 모드 - 동기화 설정됨) - 노랑
-                    # 2 = Master (마스터 모드 - 동기화 설정됨) - 초록
-                    if display_sync_state == 2:
-                        logging.info(f"디바이스 {device_id}가 마스터 상태입니다. (State: {display_sync_state})")
-                        found_master = True
-                    elif display_sync_state == 1:
-                        logging.info(f"디바이스 {device_id}가 슬레이브 상태입니다. (State: {display_sync_state})")
-                        found_slave = True
-                    elif display_sync_state == 0:
-                        logging.info(f"디바이스 {device_id}가 동기화되지 않은 상태입니다. (State: {display_sync_state})")
-                        found_error = True
-                except Exception as ex:
-                    logging.error(f"Sync 디바이스 정보 추출 중 오류: {ex}")
-            
-            # 우선순위: Master > Slave > Error > Unknown
-            if found_master:
-                logging.info("마스터 디바이스가 발견되어 Master 상태로 설정합니다.")
-                return self.SyncStatus.MASTER
-            elif found_slave:
-                logging.info("슬레이브 디바이스가 발견되어 Slave 상태로 설정합니다.")
-                return self.SyncStatus.SLAVE
-            elif found_error:
-                logging.info("동기화되지 않은 디바이스가 발견되어 Error 상태로 설정합니다.")
-                return self.SyncStatus.ERROR
-            else:
-                logging.warning("Sync 디바이스를 찾을 수 없어 Unknown 상태로 설정합니다.")
-                return self.SyncStatus.UNKNOWN
+        def get_local_ip(self):
+            """로컬 IP 주소를 가져옵니다."""
+            try:
+                # 고정 IP 환경을 위한 개선된 IP 탐색
+                import socket
                 
-        except Exception as ex:
-            logging.error(f"Sync 상태 확인 중 오류: {ex}")
-            return self.SyncStatus.ERROR
-    
-    def get_status_text(self, status):
-        """상태를 텍스트로 변환합니다."""
-        return {
-            self.SyncStatus.MASTER: "Synced",
-            self.SyncStatus.SLAVE: "Free",
-            self.SyncStatus.ERROR: "Free",
-            self.SyncStatus.UNKNOWN: "Unknown"
-        }.get(status, "Unknown")
-
-class UECMSTrayClient:
-    def __init__(self, server_url="http://localhost:8000"):
-        self.server_url = server_url
-        self.client_name = self.get_computer_name()
-        self.client_id = None
-        self.sio = socketio.Client()
-        self.running = False
-        self.current_preset_id = None
+                # 방법 1: 모든 네트워크 인터페이스에서 실제 IP 찾기
+                hostname = socket.gethostname()
+                try:
+                    # 호스트명으로 IP 조회
+                    ip_list = socket.gethostbyname_ex(hostname)[2]
+                    
+                    # 127.0.0.1이 아닌 실제 IP 찾기
+                    for ip in ip_list:
+                        if not ip.startswith('127.') and not ip.startswith('169.254.'):
+                            print(f"✅ 실제 네트워크 IP 발견: {ip}")
+                            logging.info(f"실제 네트워크 IP 발견: {ip}")
+                            return ip
+                except Exception as e:
+                    print(f"⚠️ 호스트명 기반 IP 탐색 실패: {e}")
+                    logging.warning(f"호스트명 기반 IP 탐색 실패: {e}")
+                
+                # 방법 2: 외부 연결 시도 (기존 방법)
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    ip = s.getsockname()[0]
+                    s.close()
+                    
+                    if not ip.startswith('127.'):
+                        print(f"✅ 외부 연결 기반 IP 발견: {ip}")
+                        logging.info(f"외부 연결 기반 IP 발견: {ip}")
+                        return ip
+                    else:
+                        print(f"⚠️ 외부 연결로 127.x.x.x IP 발견: {ip}")
+                        logging.warning(f"외부 연결로 127.x.x.x IP 발견: {ip}")
+                except Exception as e:
+                    print(f"⚠️ 외부 연결 기반 IP 탐색 실패: {e}")
+                    logging.warning(f"외부 연결 기반 IP 탐색 실패: {e}")
+                
+                # 방법 3: 네트워크 인터페이스 직접 조회 (Windows)
+                if os.name == 'nt':
+                    try:
+                        import subprocess
+                        result = subprocess.run(['ipconfig'], capture_output=True, text=True, encoding='cp949')
+                        
+                        if result.returncode == 0:
+                            # IPv4 주소 패턴 매칭
+                            import re
+                            ip_pattern = r'IPv4 주소[.\s]*:[\s]*([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})'
+                            ip_matches = re.findall(ip_pattern, result.stdout)
+                            
+                            for ip in ip_matches:
+                                if not ip.startswith('127.') and not ip.startswith('169.254.'):
+                                    print(f"✅ ipconfig 기반 IP 발견: {ip}")
+                                    logging.info(f"ipconfig 기반 IP 발견: {ip}")
+                                    return ip
+                    except Exception as e:
+                        print(f"⚠️ ipconfig 기반 IP 탐색 실패: {e}")
+                        logging.warning(f"ipconfig 기반 IP 탐색 실패: {e}")
+                
+                # 모든 방법 실패 시 기본값
+                print("❌ 실제 네트워크 IP를 찾을 수 없어 127.0.0.1 사용")
+                logging.error("실제 네트워크 IP를 찾을 수 없어 127.0.0.1 사용")
+                return "127.0.0.1"
+                
+            except Exception as e:
+                print(f"❌ IP 탐색 중 예외 발생: {e}")
+                logging.error(f"IP 탐색 중 예외 발생: {e}")
+                return "127.0.0.1"
         
-        # 프로세스 모니터링을 위한 변수들
-        self.running_processes = {}
-        self.process_monitor_thread = None
+        def cache_network_ip(self):
+            """실제 네트워크 IP를 캐시합니다."""
+            try:
+                actual_ip = self.get_local_ip()
+                if actual_ip and not actual_ip.startswith('127.'):
+                    self.cached_ip = actual_ip
+                    print(f"✅ 네트워크 IP 캐시 완료: {self.cached_ip}")
+                    logging.info(f"네트워크 IP 캐시 완료: {self.cached_ip}")
+                    return True
+                else:
+                    print(f"⚠️ 유효한 네트워크 IP를 찾을 수 없어 캐시하지 않음: {actual_ip}")
+                    logging.warning(f"유효한 네트워크 IP를 찾을 수 없어 캐시하지 않음: {actual_ip}")
+                    return False
+            except Exception as e:
+                print(f"❌ IP 캐시 중 오류: {e}")
+                logging.error(f"IP 캐시 중 오류: {e}")
+                return False
         
-        # SyncGuard 기능 추가
-        self.sync_checker = SyncChecker()
-        self.last_sync_status = SyncChecker.SyncStatus.UNKNOWN
-        
-        # 트레이 아이콘 관련
-        self.icon = None
-        self.root = None
-        
-        # 중복 실행 방지를 위한 프로세스 확인
-        if not self.check_duplicate_process():
-            print(f"❌ 이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
-            logging.error(f"이미 실행 중인 UE CMS 클라이언트가 있습니다. (이름: {self.client_name})")
-            sys.exit(1)
-        
-        # Socket.io 이벤트 핸들러 등록
-        self.sio.on('connect', self.on_connect)
-        self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('execute_command', self.on_execute_command)
-        self.sio.on('connection_check', self.on_connection_check)
-        self.sio.on('registration_failed', self.on_registration_failed)
-        self.sio.on('stop_command', self.on_stop_command)
-        
-        logging.info(f"UE CMS 클라이언트 초기화 완료: {self.client_name}")
-    
-    def check_duplicate_process(self):
-        """중복 프로세스 실행을 방지합니다."""
-        try:
-            import psutil
-            # 패키징된 실행 파일인지 확인
-            if getattr(sys, 'frozen', False):
-                return self.check_duplicate_packaged()
+        def get_cached_ip(self):
+            """캐시된 IP를 반환합니다. 없으면 새로 캐시합니다."""
+            if self.cached_ip:
+                return self.cached_ip
             else:
-                return self.check_duplicate_development()
-        except ImportError:
-            print("⚠️ psutil을 사용할 수 없어 중복 프로세스 확인을 건너뜁니다.")
-            return True
-        except Exception as e:
-            print(f"⚠️ 프로세스 확인 중 오류: {e}")
-            return True
-    
-    def check_duplicate_packaged(self):
-        """패키징된 실행 파일용 중복 체크"""
-        try:
-            import psutil
-            current_pid = os.getpid()
-            current_exe = os.path.basename(sys.executable)
-            print(f"🔍 패키징된 실행 파일 - PID: {current_pid}, 실행파일: {current_exe}")
-            
-            duplicate_found = False
-            for proc in psutil.process_iter(['pid', 'name']):
-                try:
-                    if proc.info['pid'] == current_pid:
-                        continue
-                    if proc.info['name'] == current_exe and proc.is_running():
-                        print(f"⚠️ 같은 실행 파일이 이미 실행 중: PID {proc.info['pid']}")
-                        duplicate_found = True
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-            
-            if not duplicate_found:
-                print("✅ 중복 프로세스가 발견되지 않았습니다.")
-            
-            return not duplicate_found
-        except Exception as e:
-            print(f"⚠️ 패키징된 실행 파일 중복 체크 중 오류: {e}")
-            return True
-    
-    def check_duplicate_development(self):
-        """개발 환경용 중복 체크"""
-        try:
-            import psutil
-            current_pid = os.getpid()
-            current_script = os.path.basename(sys.argv[0]).lower()
-            current_proc = psutil.Process(current_pid)
-            current_cmdline = current_proc.cmdline() if current_proc.cmdline() else []
-
-            print(f"DEBUG: 개발 환경 - PID={current_pid}, 스크립트={current_script}, cmdline={current_cmdline}")
-
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['pid'] == current_pid:
-                        continue
-                    if proc.info['name'] and 'python' in proc.info['name'].lower():
-                        cmdline = proc.info['cmdline']
-                        if not cmdline or len(cmdline) < 2:
+                self.cache_network_ip()
+                return self.cached_ip or "127.0.0.1"
+        
+        def check_duplicate_process(self):
+            """같은 이름의 클라이언트가 이미 실행 중인지 확인합니다."""
+            try:
+                current_pid = os.getpid()
+                current_script = os.path.abspath(sys.argv[0])
+                
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        # 현재 프로세스는 제외
+                        if proc.info['pid'] == current_pid:
                             continue
-                        proc_script = os.path.basename(cmdline[1]).lower()
-                        # 현재 프로세스와 정확히 같은 스크립트를 실행하는지 확인
-                        if (proc_script == current_script and proc.is_running()):
-                            print(f"⚠️ 같은 스크립트가 이미 실행 중: PID {proc.info['pid']} ({proc_script})")
-                            return False
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, IndexError):
-                    continue
-            return True
-        except Exception as e:
-            print(f"⚠️ 개발 환경 중복 체크 중 오류: {e}")
-            return True
-    
-    def get_computer_name(self):
-        """컴퓨터의 실제 호스트명을 가져옵니다."""
-        try:
-            return socket.gethostname()
-        except:
-            return f"Client_{os.getpid()}"
-    
-    def get_local_ip(self):
-        """로컬 IP 주소를 가져옵니다."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except:
-            return "127.0.0.1"
-    
-    def get_sync_status(self):
-        """현재 싱크 상태를 가져옵니다."""
-        return self.sync_checker.get_sync_status()
-    
-    def create_icon_image(self, color):
-        """아이콘 이미지를 생성합니다."""
-        if not PYTRAY_AVAILABLE:
-            return None
+                        
+                        # Python 프로세스인지 확인
+                        if proc.info['name'] and 'python' in proc.info['name'].lower():
+                            cmdline = proc.info['cmdline']
+                            if cmdline and len(cmdline) > 1:
+                                # client_tray.py가 실행 중인지 확인
+                                if 'client_tray.py' in cmdline[1] or 'start_client.bat' in ' '.join(cmdline):
+                                    print(f"⚠️ 다른 클라이언트 프로세스 발견: PID {proc.info['pid']}")
+                                    return False
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
+                return True
+            except Exception as e:
+                print(f"⚠️ 프로세스 확인 중 오류: {e}")
+                return True  # 오류 시 실행 허용
+        
+        def create_icon_image(self, color):
+            """아이콘 이미지를 생성합니다."""
+            if not PYTRAY_AVAILABLE:
+                return None
             
-        # 16x16 픽셀 아이콘 생성
-        image = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
+            # 16x16 픽셀 아이콘 생성
+            image = Image.new('RGBA', (16, 16), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            
+            # 원형 아이콘 그리기
+            draw.ellipse([2, 2, 14, 14], fill=color, outline=(255, 255, 255, 255))
+            
+            return image
         
-        # 원형 아이콘 그리기
-        draw.ellipse([2, 2, 14, 14], fill=color, outline=(255, 255, 255, 255))
+        def create_tray_icon(self):
+            """트레이 아이콘을 생성합니다."""
+            if not PYTRAY_AVAILABLE:
+                print("⚠️ pystray를 사용할 수 없어 트레이 아이콘을 생성하지 않습니다.")
+                return
+            
+            try:
+                # 초기 상태는 연결 안됨으로 설정 (빨간색)
+                initial_color = (255, 0, 0, 255)  # 빨간색
+                image = self.create_icon_image(initial_color)
+                
+                # 메뉴 아이템 생성
+                menu = pystray.Menu(
+                    pystray.MenuItem("상태 정보", self.safe_show_status_info),
+                    pystray.MenuItem("새로고침", self.safe_refresh_status),
+                    pystray.MenuItem("설정", self.safe_open_config),
+                    pystray.MenuItem("서버 재연결", self.safe_reconnect_to_server),
+                    pystray.MenuItem("종료", self.safe_stop_client)
+                )
+                
+                # 트레이 아이콘 생성
+                self.icon = pystray.Icon("ue_cms_client", image, "UE CMS Client", menu)
+                
+                # 아이콘 클릭 이벤트 설정
+                self.icon.on_click = self.on_icon_click
+                
+                print("✅ 트레이 아이콘 생성 완료")
+                logging.info("트레이 아이콘 생성 완료")
+                
+            except Exception as e:
+                print(f"❌ 트레이 아이콘 생성 실패: {e}")
+                logging.error(f"트레이 아이콘 생성 실패: {e}")
+                self.icon = None
         
-        return image
-    
-    def create_tray_icon(self):
-        """트레이 아이콘을 생성합니다."""
-        if not PYTRAY_AVAILABLE:
-            print("⚠️ pystray를 사용할 수 없어 트레이 아이콘을 생성할 수 없습니다.")
-            return
+        def safe_show_status_info(self, icon, item):
+            """안전한 상태 정보 표시"""
+            try:
+                print("📊 상태 정보 메뉴 클릭됨")
+                self.show_status_info()
+            except Exception as e:
+                print(f"❌ 상태 정보 표시 오류: {e}")
         
-        # 기본 아이콘 이미지 생성 (녹색)
-        icon_image = self.create_icon_image('green')
+        def safe_refresh_status(self, icon, item):
+            """안전한 상태 새로고침"""
+            try:
+                print("🔄 새로고침 메뉴 클릭됨")
+                self.refresh_status()
+            except Exception as e:
+                print(f"❌ 상태 새로고침 오류: {e}")
         
-        # 메뉴 생성
-        menu = pystray.Menu(
-            pystray.MenuItem("상태 정보", self.show_status_info),
-            pystray.MenuItem("새로고침", self.refresh_status),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("종료", self.stop_client)
-        )
+        def safe_open_config(self, icon, item):
+            """안전한 설정 파일 열기"""
+            try:
+                print("🔧 설정 파일 열기 메뉴 클릭됨")
+                import os
+                import subprocess
+                
+                # 실행 파일과 같은 디렉토리의 config.json 파일 사용
+                if getattr(sys, 'frozen', False):
+                    # PyInstaller로 패키징된 경우
+                    config_file = os.path.join(os.path.dirname(sys.executable), "config.json")
+                else:
+                    # 개발 환경
+                    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                
+                if os.path.exists(config_file):
+                    # Windows에서 메모장으로 파일 열기
+                    subprocess.Popen(["notepad.exe", config_file])
+                    print(f"✅ 설정 파일 열기: {config_file}")
+                else:
+                    # 설정 파일이 없으면 새로 생성
+                    default_config = {
+                        "server_url": "http://localhost:8000"
+                    }
+                    import json
+                    with open(config_file, 'w', encoding='utf-8') as f:
+                        json.dump(default_config, f, indent=2, ensure_ascii=False)
+                    
+                    # 생성된 파일 열기
+                    subprocess.Popen(["notepad.exe", config_file])
+                    print(f"✅ 새 설정 파일 생성 및 열기: {config_file}")
+                    
+            except Exception as e:
+                print(f"❌ 설정 파일 열기 오류: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # 트레이 아이콘 생성
-        self.icon = pystray.Icon(
-            "ue_cms_client",
-            icon_image,
-            "UE CMS Client",
-            menu
-        )
+        def safe_reconnect_to_server(self, icon, item):
+            """안전한 서버 재연결"""
+            try:
+                print("🔄 서버 재연결 메뉴 클릭됨")
+                self.reconnect_to_server(icon, item)
+            except Exception as e:
+                print(f"❌ 서버 재연결 오류: {e}")
         
-        print("✅ 트레이 아이콘이 생성되었습니다.")
-        logging.info("트레이 아이콘이 생성되었습니다.")
-    
-    def on_icon_click(self, icon, event):
-        """트레이 아이콘 클릭 시 호출됩니다."""
-        if event.button == 1:  # 왼쪽 클릭
-            self.show_status_info()
-    
-    def show_status_info(self):
-        """상태 정보를 보여줍니다."""
-        sync_status = self.get_sync_status()
-        status_text = self.sync_checker.get_status_text(sync_status)
+        def safe_stop_client(self, icon, item):
+            """안전한 클라이언트 종료"""
+            try:
+                print("🛑 종료 메뉴 클릭됨")
+                self.stop_client()
+            except Exception as e:
+                print(f"❌ 클라이언트 종료 오류: {e}")
         
-        info = f"""UE CMS Client
+        def run_tray_icon(self):
+            """트레이 아이콘을 실행합니다."""
+            if self.icon and PYTRAY_AVAILABLE:
+                try:
+                    print("🖥️ 트레이 아이콘 실행 중...")
+                    logging.info("트레이 아이콘 실행 중...")
+                    # 트레이 아이콘 실행 (블로킹)
+                    self.icon.run()
+                except Exception as e:
+                    print(f"❌ 트레이 아이콘 실행 실패: {e}")
+                    logging.error(f"트레이 아이콘 실행 실패: {e}")
+            else:
+                print("⚠️ 트레이 아이콘을 실행할 수 없습니다. (pystray 미설치 또는 아이콘 생성 실패)")
+                logging.warning("트레이 아이콘을 실행할 수 없습니다.")
+        
+        def on_icon_click(self, icon, event):
+            """트레이 아이콘 클릭 시 호출됩니다."""
+            if event.button == 1:  # 왼쪽 클릭
+                self.show_status_info()
+        
+        def show_status_info(self):
+            """상태 정보를 보여줍니다."""
+            info = f"""UE CMS Client
 
 클라이언트: {self.client_name}
 서버: {self.server_url}
 연결 상태: {'연결됨' if self.sio.connected else '연결 안됨'}
-싱크 상태: {status_text}
 실행 중인 프로세스: {len(self.running_processes)}개"""
 
-        # tkinter 창 생성
-        root = tk.Tk()
-        root.withdraw()  # 메인 창 숨기기
-        messagebox.showinfo("UE CMS Client Status", info)
-        root.destroy()
-    
-    def refresh_status(self):
-        """상태를 새로고침합니다."""
-        # 싱크 상태 새로고침
-        new_sync_status = self.get_sync_status()
-        if new_sync_status != self.last_sync_status:
-            self.last_sync_status = new_sync_status
-            self.update_tray_icon()
-            logging.info(f"싱크 상태 변경: {new_sync_status}")
+            # tkinter 창 생성
+            root = tk.Tk()
+            root.withdraw()  # 메인 창 숨기기
+            messagebox.showinfo("UE CMS Client Status", info)
+            root.destroy()
         
-        # 서버에 상태 전송
-        self.send_current_process_status()
-    
-    def update_tray_icon(self):
-        """트레이 아이콘을 업데이트합니다."""
-        if self.icon and PYTRAY_AVAILABLE:
-            # 새로운 아이콘 생성
-            self.create_tray_icon()
-            # 기존 아이콘 교체
-            self.icon.icon = self.icon._icon
-    
-    def register_with_server(self):
-        """서버에 클라이언트를 등록합니다."""
-        try:
-            client_info = {
-                'name': self.client_name,
-                'ip_address': self.get_local_ip(),
-                'port': 8081,
-                'sync_status': self.get_sync_status()
-            }
-            
-            response = requests.post(f"{self.server_url}/api/clients", json=client_info, timeout=10)
-            
-            if response.status_code == 200:
-                client_data = response.json()
-                self.client_id = client_data['id']
-                logging.info(f"서버 등록 성공: ID {self.client_id}")
-                return True
-            elif response.status_code == 500 and "UNIQUE constraint failed" in response.text:
-                logging.info(f"이미 등록된 클라이언트입니다: {self.client_name}. 기존 정보를 조회합니다.")
+        def refresh_status(self):
+            """상태를 새로고침합니다."""
+            # 서버에 상태 전송
+            self.send_current_process_status()
+        
+        def update_tray_icon(self):
+            """트레이 아이콘을 업데이트합니다."""
+            if self.icon and PYTRAY_AVAILABLE:
                 try:
-                    get_response = requests.get(f"{self.server_url}/api/clients", timeout=10)
-                    if get_response.status_code == 200:
-                        clients = get_response.json()
-                        for client in clients:
-                            if client['name'] == self.client_name:
-                                self.client_id = client['id']
-                                logging.info(f"기존 클라이언트 ID 조회 성공: {self.client_id}")
-                                return True
+                    # 연결 상태 확인 (더 정확한 방법)
+                    is_connected = False
+                    if hasattr(self, 'sio') and self.sio:
+                        is_connected = self.sio.connected
+                    
+                    print(f"🔍 [트레이 아이콘] 연결 상태 확인: sio.connected = {is_connected}")
+                    print(f"🔍 [트레이 아이콘] 클라이언트 이름: {self.client_name}")
+                    
+                    # 연결 상태에 따른 아이콘 색상 결정
+                    if is_connected:
+                        icon_color = (0, 255, 0, 255)  # 녹색 (연결됨)
+                        print("🟢 [트레이 아이콘] 업데이트: 연결됨 (녹색)")
+                    else:
+                        icon_color = (255, 0, 0, 255)  # 빨간색 (연결 안됨)
+                        print("🔴 [트레이 아이콘] 업데이트: 연결 안됨 (빨간색)")
+                    
+                    # 새로운 아이콘 이미지 생성
+                    new_image = self.create_icon_image(icon_color)
+                    
+                    # 기존 아이콘 교체
+                    self.icon.icon = new_image
+                    print("✅ [트레이 아이콘] 색상 업데이트 완료")
+                    
                 except Exception as e:
-                    logging.error(f"기존 클라이언트 정보 조회 실패: {e}")
-                
-                logging.info(f"기존 클라이언트 정보 조회 실패했지만 연결을 계속합니다.")
-                return True
-            else:
-                logging.error(f"서버 등록 실패: {response.status_code} - {response.text}")
+                    print(f"❌ [트레이 아이콘] 업데이트 실패: {e}")
+                    logging.error(f"트레이 아이콘 업데이트 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        def register_with_server(self):
+            """
+            서버에 클라이언트를 등록합니다.
+            """
+            try:
+                client_info = {
+                    'name': self.client_name,
+                    'ip_address': self.get_local_ip(),
+                    'port': 8081
+                }
+                response = requests.post(f"{self.server_url}/api/clients", json=client_info, timeout=10)
+                if response.status_code == 200:
+                    client_data = response.json()
+                    self.client_id = client_data['id']
+                    return True
+                else:
+                    return False
+            except Exception as e:
                 return False
+
+        def connect_socket(self):
+            """
+            Socket.io 연결을 설정합니다.
+            """
+            try:
+                self.sio.connect(self.server_url)
+                self.running = True
+                return True
+            except Exception as e:
+                return False
+
+        def on_connect(self):
+            """Socket.io 연결 시 호출됩니다."""
+            print(f"🔌 서버에 연결되었습니다: {self.client_name}")
+            logging.info("서버에 연결되었습니다")
+            
+            # 연결 성공 시 즉시 트레이 아이콘 업데이트
+            if hasattr(self, 'update_tray_icon'):
+                self.update_tray_icon()
+            
+            # 클라이언트 등록
+            self.sio.emit('register_client', {
+                'name': self.client_name,
+                'clientType': 'python'
+            })
+            print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
+            
+            self.start_heartbeat()
+        
+        def send_current_process_status(self):
+            """현재 실행 중인 프로세스 상태를 서버에 전송합니다."""
+            try:
+                if self.sio.connected:
+                    self.sio.emit('process_status', {
+                        'clientName': self.client_name,
+                        'processes': list(self.running_processes.keys()),
+                        'timestamp': datetime.now().isoformat()
+                    })
+            except Exception as e:
+                logging.error(f"프로세스 상태 전송 실패: {e}")
+        
+        def on_disconnect(self):
+            """Socket.io 연결 해제 시 호출됩니다."""
+            print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
+            logging.info("서버와의 연결이 해제되었습니다")
+            
+            # 트레이 아이콘 색상 업데이트 (빨간색으로 변경)
+            self.update_tray_icon()
+        
+        def start_heartbeat(self):
+            """하트비트 전송을 시작합니다."""
+            def heartbeat_loop():
+                while self.running:
+                    try:
+                        self.sio.emit('heartbeat', {
+                            'clientName': self.client_name,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        time.sleep(5)  # 5초마다 하트비트 (30초에서 변경)
+                    except Exception as e:
+                        logging.error(f"하트비트 전송 오류: {e}")
+                        time.sleep(1)  # 오류 시 1초 후 재시도
+            
+            import threading
+            heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+            heartbeat_thread.start()
+        
+        def on_registration_failed(self, data):
+            """클라이언트 등록 실패 시 호출됩니다."""
+            reason = data.get('reason', '알 수 없는 이유')
+            print(f"❌ 클라이언트 등록 실패: {reason}")
+            logging.error(f"클라이언트 등록 실패: {reason}")
+        
+        def on_execute_command(self, data):
+            """명령 실행 요청을 받았을 때 호출됩니다."""
+            try:
+                command = data.get('command', '')
+                preset_id = data.get('preset_id')
+                client_name = data.get('client_name', '')
                 
-        except Exception as e:
-            logging.error(f"서버 등록 중 오류: {e}")
-            return False
-    
-    def connect_socket(self):
-        """Socket.io 연결을 설정합니다."""
-        try:
-            print(f"🔌 소켓 연결 시도: {self.server_url}")
-            self.sio.connect(self.server_url)
-            self.running = True
-            print(f"✅ Socket.io 연결 성공: {self.client_name}")
-            logging.info("Socket.io 연결 성공")
-            return True
-        except Exception as e:
-            print(f"❌ Socket.io 연결 실패: {e}")
-            logging.error(f"Socket.io 연결 실패: {e}")
-            return False
-    
-    def on_connect(self):
-        """Socket.io 연결 시 호출됩니다."""
-        print(f"🔌 서버에 연결되었습니다: {self.client_name}")
-        logging.info("서버에 연결되었습니다")
+                if client_name != self.client_name:
+                    return  # 다른 클라이언트용 명령이면 무시
+                
+                print(f"📋 명령 실행 요청: {command}")
+                logging.info(f"명령 실행 요청: {command}")
+                
+                # 명령 실행을 별도 스레드에서 처리
+                def execute_command_async():
+                    try:
+                        result = self.execute_command(command)
+                        
+                        # 결과 전송
+                        self.sio.emit('execution_result', {
+                            'clientName': self.client_name,
+                            'presetId': preset_id,
+                            'command': command,
+                            'result': result,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        print(f"✅ 명령 실행 완료: {result.get('success', False)}")
+                        
+                    except Exception as e:
+                        logging.error(f"명령 실행 중 오류: {e}")
+                        self.sio.emit('execution_result', {
+                            'clientName': self.client_name,
+                            'presetId': preset_id,
+                            'command': command,
+                            'result': {'success': False, 'error': str(e)},
+                            'timestamp': datetime.now().isoformat()
+                        })
+                
+                # 별도 스레드에서 명령 실행
+                command_thread = threading.Thread(target=execute_command_async, daemon=True)
+                command_thread.start()
+                
+            except Exception as e:
+                logging.error(f"명령 실행 요청 처리 중 오류: {e}")
         
-        # 클라이언트 등록
-        self.sio.emit('register_client', {
-            'name': self.client_name,
-            'clientType': 'python_tray',
-            'sync_status': self.get_sync_status()
-        })
-        print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
+        def on_connection_check(self, data):
+            """연결 확인 요청을 받았을 때 호출됩니다."""
+            try:
+                client_name = data.get('client_name', '')
+                timestamp = data.get('timestamp', '')
+                
+                print(f"🔍 [연결 확인] 요청 수신: {self.client_name} (시간: {timestamp})")
+                print(f"🔍 [연결 확인] 소켓 연결 상태: {self.sio.connected}")
+                logging.info(f"연결 확인 요청 수신: {self.client_name} (소켓 연결: {self.sio.connected})")
+                
+                if client_name != self.client_name:
+                    print(f"⚠️ [연결 확인] 다른 클라이언트용 요청 - 무시: {client_name} != {self.client_name}")
+                    return  # 다른 클라이언트용 요청이면 무시
+                
+                # 연결 확인 응답
+                if self.sio.connected:
+                    response_data = {
+                        'clientName': self.client_name,
+                        'status': 'online',
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    
+                    print(f"📤 [연결 확인] 응답 전송 시도: {self.client_name}")
+                    self.sio.emit('connection_check_response', response_data)
+                    
+                    print(f"✅ [연결 확인] 응답 전송 완료: {self.client_name}")
+                    logging.info(f"연결 확인 응답 전송 완료: {self.client_name}")
+                else:
+                    print(f"⚠️ [연결 확인] 소켓이 연결되지 않음 - 응답 건너뜀: {self.client_name}")
+                    logging.warning(f"소켓이 연결되지 않음 - 연결 확인 응답 건너뜀: {self.client_name}")
+                
+            except Exception as e:
+                print(f"❌ [연결 확인] 응답 중 오류: {e}")
+                logging.error(f"연결 확인 응답 중 오류: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # 현재 실행 중인 프로세스 정보를 서버에 전송
-        self.send_current_process_status()
+        def on_stop_command(self, data):
+            """정지 명령을 받았을 때 호출됩니다."""
+            try:
+                client_name = data.get('client_name', '')
+                
+                if client_name != self.client_name:
+                    return  # 다른 클라이언트용 명령이면 무시
+                
+                print(f"🛑 정지 명령 수신: {self.client_name}")
+                logging.info(f"정지 명령 수신: {self.client_name}")
+                
+                # 실행 중인 모든 프로세스 정지
+                self.stop_running_processes()
+                
+                # 정지 완료 응답 전송
+                if self.sio.connected:
+                    self.sio.emit('stop_command_completed', {
+                        'clientName': self.client_name,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    print(f"✅ 정지 완료 응답 전송: {self.client_name}")
+                
+            except Exception as e:
+                logging.error(f"정지 명령 처리 중 오류: {e}")
         
-        self.start_heartbeat()
-        self.start_process_monitor()
-        self.start_sync_monitor()
-    
-    def send_current_process_status(self):
-        """현재 실행 중인 프로세스 정보를 서버에 전송합니다."""
-        try:
-            running_processes = []
+        def add_running_process(self, process_name, pid, command):
+            """실행 중인 프로세스를 추가합니다."""
+            self.running_processes[process_name] = {
+                'pid': pid,
+                'command': command,
+                'start_time': datetime.now()
+            }
+            logging.info(f"프로세스 추가: {process_name} (PID: {pid})")
+        
+        def remove_running_process(self, process_name):
+            """실행 중인 프로세스를 제거합니다."""
+            if process_name in self.running_processes:
+                del self.running_processes[process_name]
+                logging.info(f"프로세스 제거: {process_name}")
+        
+        def check_process_status(self):
+            """실행 중인 프로세스 상태를 확인합니다."""
+            processes_to_remove = []
             
             for process_name, process_info in self.running_processes.items():
-                running_processes.append({
-                    'name': process_name,
-                    'pid': process_info['pid'],
-                    'command': process_info['command'],
-                    'start_time': process_info['start_time']
-                })
-            
-            # 서버에 현재 상태 전송
-            self.sio.emit('current_process_status', {
-                'clientName': self.client_name,
-                'clientId': self.client_id,
-                'running_process_count': len(self.running_processes),
-                'running_processes': running_processes,
-                'status': 'running' if len(self.running_processes) > 0 else 'online',
-                'sync_status': self.get_sync_status(),
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            print(f"📊 현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
-            logging.info(f"현재 프로세스 상태 전송: {len(self.running_processes)}개 실행 중")
-            
-        except Exception as e:
-            print(f"❌ 프로세스 상태 전송 실패: {e}")
-            logging.error(f"프로세스 상태 전송 실패: {e}")
-    
-    def start_sync_monitor(self):
-        """싱크 상태 모니터링을 시작합니다."""
-        def sync_monitor_loop():
-            print(f"🔄 싱크 모니터링 시작: {self.client_name}")
-            logging.info(f"싱크 모니터링 시작: {self.client_name}")
-            
-            while self.running:
                 try:
-                    current_sync_status = self.get_sync_status()
+                    pid = process_info['pid']
+                    proc = psutil.Process(pid)
                     
-                    # 상태가 변경된 경우에만 서버에 전송
-                    if current_sync_status != self.last_sync_status:
-                        self.last_sync_status = current_sync_status
-                        
-                        # 트레이 아이콘 업데이트
-                        self.update_tray_icon()
-                        
-                        # 서버에 싱크 상태 변경 알림
-                        self.sio.emit('sync_status_changed', {
-                            'clientName': self.client_name,
-                            'clientId': self.client_id,
-                            'sync_status': current_sync_status,
-                            'status_text': self.sync_checker.get_status_text(current_sync_status),
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        
-                        print(f"🔄 싱크 상태 변경: {current_sync_status}")
-                        logging.info(f"싱크 상태 변경: {current_sync_status}")
+                    if not proc.is_running():
+                        processes_to_remove.append(process_name)
+                        logging.info(f"프로세스 종료 감지: {process_name} (PID: {pid})")
                     
-                    time.sleep(10)  # 10초마다 싱크 상태 확인
-                    
+                except psutil.NoSuchProcess:
+                    processes_to_remove.append(process_name)
+                    logging.info(f"프로세스 존재하지 않음: {process_name} (PID: {pid})")
                 except Exception as e:
-                    print(f"❌ 싱크 모니터링 오류: {e}")
-                    logging.error(f"싱크 모니터링 오류: {e}")
-                    time.sleep(10)
-            
-            print(f"🔄 싱크 모니터링 종료: {self.client_name}")
-        
-        self.sync_monitor_thread = threading.Thread(target=sync_monitor_loop, daemon=True)
-        self.sync_monitor_thread.start()
-        print("🔄 싱크 모니터링 스레드 시작 (10초 간격)")
-        logging.info("싱크 모니터링 스레드 시작 (10초 간격)")
-    
-    def on_disconnect(self):
-        """Socket.io 연결 해제 시 호출됩니다."""
-        print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
-        logging.info("서버와의 연결이 해제되었습니다")
-    
-    def start_heartbeat(self):
-        """하트비트 전송을 시작합니다."""
-        def heartbeat_loop():
-            heartbeat_count = 0
-            print(f"💓 하트비트 루프 시작 - 클라이언트: {self.client_name}")
-            logging.info(f"하트비트 루프 시작 - 클라이언트: {self.client_name}")
-            
-            while self.running:
-                try:
-                    heartbeat_count += 1
-                    print(f"💓 하트비트 전송 시도 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
-                    
-                    try:
-                        print(f"📤 하트비트 전송 중: {self.client_name} -> 서버")
-                        
-                        running_process_count = len(self.running_processes)
-                        status = "콘텐츠 실행 중" if running_process_count > 0 else "실행 중"
-                        
-                        self.sio.emit('heartbeat', {
-                            'name': self.client_name,
-                            'status': status,
-                            'running_process_count': running_process_count,
-                            'running_processes': list(self.running_processes.keys()),
-                            'sync_status': self.get_sync_status(),
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        print(f"✅ 하트비트 전송 완료 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected}) - {datetime.now().strftime('%H:%M:%S')}")
-                        logging.info(f"하트비트 전송 #{heartbeat_count}: {self.client_name} (연결 상태: {self.sio.connected})")
-                    except Exception as heartbeat_error:
-                        print(f"⚠️ 하트비트 전송 실패: {heartbeat_error}")
-                        print(f"⚠️ 하트비트 전송 실패했지만 계속 시도합니다.")
-                    
-                    time.sleep(5)  # 5초마다 하트비트
-                except KeyboardInterrupt:
-                    print(f"\n🛑 하트비트 루프에서 사용자에 의해 종료됨: {self.client_name}")
-                    break
-                except Exception as e:
-                    print(f"❌ 하트비트 루프 오류: {e} - {datetime.now().strftime('%H:%M:%S')}")
-                    logging.error(f"하트비트 루프 오류: {e}")
-                    print(f"⚠️ 하트비트 루프 오류가 발생했지만 계속 실행합니다.")
-                    time.sleep(5)
-            
-            print(f"💓 하트비트 루프 종료: {self.client_name}")
-        
-        heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
-        heartbeat_thread.start()
-        print("💓 하트비트 스레드 시작 (5초 간격)")
-        logging.info("하트비트 스레드 시작 (5초 간격)")
-    
-    def on_registration_failed(self, data):
-        """서버 등록 실패 시 호출됩니다."""
-        reason = data.get('reason', '알 수 없는 이유')
-        logging.error(f"서버 등록 실패: {reason}")
-        print(f"❌ 서버 등록 실패: {reason}")
-        print(f"⚠️ 등록 실패했지만 클라이언트는 계속 실행됩니다. 하트비트를 계속 전송합니다.")
-    
-    def on_execute_command(self, data):
-        """서버로부터 명령 실행 요청을 받습니다."""
-        try:
-            command = data.get('command')
-            target_client_id = data.get('clientId')
-            target_client_name = data.get('clientName')
-            preset_id = data.get('presetId')
-            
-            print(f"📨 명령어 수신: {data}")
-            logging.info(f"명령어 수신: {data}")
-            
-            # 클라이언트 ID나 이름으로 대상 확인
-            print(f"🔍 대상 확인: 받은 ID={target_client_id}, 내 ID={self.client_id}, 받은 이름={target_client_name}, 내 이름={self.client_name}")
-            
-            if target_client_id and target_client_id != self.client_id:
-                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
-                logging.info(f"클라이언트 ID 불일치로 명령 무시: {target_client_id} != {self.client_id}")
-                return
-            
-            if target_client_name and target_client_name != self.client_name:
-                print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
-                logging.info(f"클라이언트 이름 불일치로 명령 무시: {target_client_name} != {self.client_name}")
-                return
-            
-            print(f"✅ 명령어 실행 대상 확인됨: {self.client_name}")
-            
-            # 별도 스레드에서 명령 실행
-            def execute_command_async():
-                try:
-                    print(f"🚀 명령어 실행 시작: {command}")
-                    
-                    # 프리셋 ID 저장
-                    self.current_preset_id = preset_id
-                    print(f"📝 현재 프리셋 ID 설정: {preset_id}")
-                    
-                    result = self.execute_command(command)
-                    print(f"✅ 명령어 실행 완료: {result}")
-                    
-                    # 실행 결과를 서버에 전송 (성공 상태)
-                    self.sio.emit('execution_result', {
-                        'executionId': data.get('executionId'),
-                        'clientId': self.client_id,
-                        'clientName': self.client_name,
-                        'command': command,
-                        'result': result,
-                        'presetId': preset_id,
-                        'status': 'completed',
-                        'timestamp': datetime.now().isoformat()
-                    })
-                    
-                except Exception as e:
-                    error_msg = f"명령 실행 중 오류: {e}"
-                    logging.error(error_msg)
-                    print(f"❌ {error_msg}")
-                    
-                    # 오류 시 프리셋 ID 초기화
-                    self.current_preset_id = None
-                    
-                    self.sio.emit('execution_result', {
-                        'executionId': data.get('executionId'),
-                        'clientId': self.client_id,
-                        'clientName': self.client_name,
-                        'command': command,
-                        'result': {'error': error_msg},
-                        'presetId': preset_id,
-                        'status': 'failed',
-                        'timestamp': datetime.now().isoformat()
-                    })
-            
-            # 별도 스레드에서 명령 실행
-            execution_thread = threading.Thread(target=execute_command_async, daemon=True)
-            execution_thread.start()
-            print(f"🚀 명령 실행을 별도 스레드에서 시작: {command}")
-            
-        except Exception as e:
-            error_msg = f"명령 실행 요청 처리 중 오류: {e}"
-            logging.error(error_msg)
-            print(f"❌ {error_msg}")
-            
-            self.sio.emit('execution_result', {
-                'executionId': data.get('executionId'),
-                'clientId': self.client_id,
-                'clientName': self.client_name,
-                'command': data.get('command'),
-                'result': {'error': error_msg},
-                'presetId': data.get('presetId'),
-                'timestamp': datetime.now().isoformat()
-            })
-    
-    def on_connection_check(self, data):
-        """서버의 연결 확인 요청에 응답합니다."""
-        try:
-            client_name = data.get('clientName')
-            print(f"🔍 연결 확인 요청 수신: {client_name} (내 이름: {self.client_name})")
-            logging.info(f"연결 확인 요청 수신: {client_name} (내 이름: {self.client_name})")
-            
-            if client_name == self.client_name:
-                self.sio.emit('connection_check_response', {
-                    'clientName': self.client_name,
-                    'sync_status': self.get_sync_status()
-                })
-                print(f"✅ 연결 확인 응답 전송: {self.client_name}")
-                logging.info(f"연결 확인 응답 전송: {self.client_name}")
-            else:
-                print(f"⚠️ 다른 클라이언트 요청 무시: {client_name}")
-                logging.info(f"다른 클라이언트 요청 무시: {client_name}")
-        except Exception as e:
-            print(f"❌ 연결 확인 응답 실패: {e}")
-            logging.error(f"연결 확인 응답 실패: {e}")
-    
-    def on_stop_command(self, data):
-        """서버로부터 정지 요청을 받습니다."""
-        try:
-            target_client_id = data.get('clientId')
-            target_client_name = data.get('clientName')
-            preset_id = data.get('presetId')
-            
-            print(f"🛑 정지 요청 수신: {data}")
-            logging.info(f"정지 요청 수신: {data}")
-            
-            # 클라이언트 ID나 이름으로 대상 확인
-            if target_client_id and target_client_id != self.client_id:
-                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
-                logging.info(f"클라이언트 ID 불일치로 정지 요청 무시: {target_client_id} != {self.client_id}")
-                return
-            
-            if target_client_name and target_client_name != self.client_name:
-                print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
-                logging.info(f"클라이언트 이름 불일치로 정지 요청 무시: {target_client_name} != {self.client_name}")
-                return
-            
-            print(f"✅ 정지 요청 대상 확인됨: {self.client_name}")
-            
-            # 현재 실행 중인 프로세스 정지
-            stopped_count = self.stop_running_processes()
-            print(f"🛑 {stopped_count}개 프로세스 정지 완료")
-            
-            # 프리셋 ID 초기화
-            self.current_preset_id = None
-            
-            # 정지 결과를 서버에 전송
-            self.sio.emit('stop_result', {
-                'clientId': self.client_id,
-                'clientName': self.client_name,
-                'presetId': preset_id,
-                'stopped_count': stopped_count,
-                'status': 'completed',
-                'timestamp': datetime.now().isoformat()
-            })
-            
-        except Exception as e:
-            error_msg = f"정지 요청 처리 중 오류: {e}"
-            logging.error(error_msg)
-            print(f"❌ {error_msg}")
-            
-            self.sio.emit('stop_result', {
-                'clientId': self.client_id,
-                'clientName': self.client_name,
-                'presetId': data.get('presetId'),
-                'error': error_msg,
-                'status': 'failed',
-                'timestamp': datetime.now().isoformat()
-            })
-    
-    def add_running_process(self, process_name, pid, command):
-        """실행 중인 프로세스를 추가합니다."""
-        self.running_processes[process_name] = {
-            'pid': pid,
-            'command': command,
-            'start_time': datetime.now().isoformat()
-        }
-        print(f"➕ 프로세스 추가: {process_name} (PID: {pid})")
-        logging.info(f"프로세스 추가: {process_name} (PID: {pid})")
-    
-    def remove_running_process(self, process_name):
-        """실행 중인 프로세스를 제거합니다."""
-        if process_name in self.running_processes:
-            del self.running_processes[process_name]
-            print(f"➖ 프로세스 제거: {process_name}")
-            logging.info(f"프로세스 제거: {process_name}")
-    
-    def check_process_status(self):
-        """현재 실행 중인 프로세스 상태를 확인합니다."""
-        try:
-            import psutil
-            current_processes = {}
-            
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    pid = proc.info['pid']
-                    name = proc.info['name']
-                    cmdline = proc.info['cmdline']
-                    
-                    if cmdline:
-                        command = ' '.join(cmdline)
-                        
-                        # 실행 중인 프로세스 목록에 있는 프로세스인지 확인
-                        for process_name, process_info in self.running_processes.items():
-                            if process_info['pid'] == pid:
-                                current_processes[process_name] = {
-                                    'pid': pid,
-                                    'name': name,
-                                    'command': command,
-                                    'start_time': process_info['start_time']
-                                }
-                                break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
+                    logging.error(f"프로세스 상태 확인 중 오류: {e}")
             
             # 종료된 프로세스 제거
-            for process_name in list(self.running_processes.keys()):
-                if process_name not in current_processes:
-                    self.remove_running_process(process_name)
-            
-            return current_processes
-            
-        except ImportError:
-            print("⚠️ psutil을 사용할 수 없어 프로세스 상태 확인을 건너뜁니다.")
-            return {}
-        except Exception as e:
-            logging.error(f"프로세스 상태 확인 중 오류: {e}")
-            return {}
-    
-    def start_process_monitor(self):
-        """프로세스 모니터링을 시작합니다."""
-        def monitor_loop():
-            print(f"📊 프로세스 모니터링 시작: {self.client_name}")
-            logging.info(f"프로세스 모니터링 시작: {self.client_name}")
-            
-            while self.running:
-                try:
-                    self.check_process_status()
-                    time.sleep(5)  # 5초마다 프로세스 상태 확인
-                except Exception as e:
-                    print(f"❌ 프로세스 모니터링 오류: {e}")
-                    logging.error(f"프로세스 모니터링 오류: {e}")
-                    time.sleep(5)
-            
-            print(f"📊 프로세스 모니터링 종료: {self.client_name}")
+            for process_name in processes_to_remove:
+                self.remove_running_process(process_name)
         
-        self.process_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
-        self.process_monitor_thread.start()
-        print("📊 프로세스 모니터링 스레드 시작 (5초 간격)")
-        logging.info("프로세스 모니터링 스레드 시작 (5초 간격)")
-    
-    def stop_running_processes(self):
-        """현재 실행 중인 모든 프로세스를 정지합니다."""
-        try:
-            import psutil
-            stopped_count = 0
+        def start_process_monitor(self):
+            """프로세스 모니터링을 시작합니다."""
+            def monitor_loop():
+                while self.running:
+                    try:
+                        self.check_process_status()
+                        time.sleep(10)  # 10초마다 체크
+                    except Exception as e:
+                        logging.error(f"프로세스 모니터링 중 오류: {e}")
+                        time.sleep(5)
             
-            for process_name, process_info in list(self.running_processes.items()):
+            self.process_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+            self.process_monitor_thread.start()
+        
+        def stop_running_processes(self):
+            """실행 중인 모든 프로세스를 정지합니다."""
+            print(f"🛑 실행 중인 프로세스 정지 중... ({len(self.running_processes)}개)")
+            
+            for process_name, process_info in self.running_processes.items():
                 try:
                     pid = process_info['pid']
                     proc = psutil.Process(pid)
                     
                     if proc.is_running():
-                        print(f"🛑 프로세스 정지 시도: {process_name} (PID: {pid})")
+                        # 프로세스 종료
                         proc.terminate()
                         
-                        # 3초 대기 후 강제 종료
+                        # 5초 대기 후 강제 종료
                         try:
-                            proc.wait(timeout=3)
-                            print(f"✅ 프로세스 정지 성공: {process_name} (PID: {pid})")
-                            stopped_count += 1
+                            proc.wait(timeout=5)
+                            print(f"✅ 프로세스 정지 완료: {process_name} (PID: {pid})")
                         except psutil.TimeoutExpired:
-                            print(f"⚠️ 프로세스 강제 종료: {process_name} (PID: {pid})")
                             proc.kill()
-                            stopped_count += 1
+                            print(f"⚠️ 프로세스 강제 종료: {process_name} (PID: {pid})")
                     
-                    self.remove_running_process(process_name)
-                    
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    print(f"⚠️ 프로세스가 이미 종료됨: {process_name}")
-                    self.remove_running_process(process_name)
-                    stopped_count += 1
+                except psutil.NoSuchProcess:
+                    print(f"⚠️ 프로세스가 이미 종료됨: {process_name} (PID: {pid})")
                 except Exception as e:
-                    print(f"❌ 프로세스 정지 실패: {process_name} - {e}")
-                    logging.error(f"프로세스 정지 실패: {process_name} - {e}")
+                    print(f"❌ 프로세스 정지 중 오류: {process_name} - {e}")
             
-            return stopped_count
-            
-        except ImportError:
-            print("⚠️ psutil을 사용할 수 없어 프로세스 정지를 건너뜁니다.")
-            return 0
-        except Exception as e:
-            logging.error(f"프로세스 정지 중 오류: {e}")
-            return 0
-    
-    def execute_command(self, command):
-        """명령을 실행합니다."""
-        try:
-            print(f"🚀 명령 실행: {command}")
-            logging.info(f"명령 실행: {command}")
-            
-            # 명령 실행
-            result = self.execute_system_command(command)
-            
-            # 프로세스 정보 추출 및 추가
-            process_name = self.extract_process_name(command)
-            if process_name and result.get('pid'):
-                self.add_running_process(process_name, result['pid'], command)
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"명령 실행 중 오류: {e}"
-            logging.error(error_msg)
-            print(f"❌ {error_msg}")
-            return {'error': error_msg}
-    
-    def execute_system_command(self, command):
-        """시스템 명령을 실행합니다."""
-        try:
-            # 명령 실행
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # 프로세스 정보 수집
-            result = {
-                'pid': process.pid,
-                'command': command,
-                'start_time': datetime.now().isoformat()
-            }
-            
-            print(f"✅ 명령 실행 성공: {command} (PID: {process.pid})")
-            logging.info(f"명령 실행 성공: {command} (PID: {process.pid})")
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"시스템 명령 실행 중 오류: {e}"
-            logging.error(error_msg)
-            print(f"❌ {error_msg}")
-            return {'error': error_msg}
-    
-    def extract_process_name(self, command):
-        """명령에서 프로세스 이름을 추출합니다."""
-        try:
-            # 명령에서 실행 파일 이름 추출
-            parts = command.split()
-            if parts:
-                # 경로에서 파일명만 추출
-                executable = parts[0]
-                if '/' in executable or '\\' in executable:
-                    executable = executable.split('/')[-1].split('\\')[-1]
-                
-                # 확장자 제거
-                if '.' in executable:
-                    executable = executable.split('.')[0]
-                
-                return executable
-        except Exception as e:
-            logging.error(f"프로세스 이름 추출 중 오류: {e}")
+            # 프로세스 목록 초기화
+            self.running_processes.clear()
+            print("✅ 모든 프로세스 정지 완료")
         
-        return None
-    
-    def start(self):
-        """클라이언트를 시작합니다."""
-        try:
-            print(f"🚀 클라이언트 시작: {self.client_name}")
-            logging.info(f"클라이언트 시작: {self.client_name}")
+        def execute_command(self, command):
+            """명령을 실행합니다."""
+            try:
+                logging.info(f"명령 실행: {command}")
+                
+                # 시스템 명령 실행
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                stdout, stderr = process.communicate(timeout=30)
+                
+                # 실행된 프로세스 정보 저장
+                process_name = self.extract_process_name(command)
+                if process_name:
+                    self.add_running_process(process_name, process.pid, command)
+                
+                return {
+                    'success': process.returncode == 0,
+                    'stdout': stdout,
+                    'stderr': stderr,
+                    'returncode': process.returncode,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return {
+                    'success': False,
+                    'error': '명령 실행 시간 초과',
+                    'timestamp': datetime.now().isoformat()
+                }
+            except Exception as e:
+                logging.error(f"명령 실행 실패: {e}")
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                }
+        
+        def execute_system_command(self, command):
+            """시스템 명령을 실행합니다."""
+            try:
+                logging.info(f"시스템 명령 실행: {command}")
+                
+                # 시스템 명령 실행
+                process = subprocess.Popen(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                stdout, stderr = process.communicate(timeout=30)
+                
+                return {
+                    'success': process.returncode == 0,
+                    'stdout': stdout,
+                    'stderr': stderr,
+                    'returncode': process.returncode,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return {
+                    'success': False,
+                    'error': '명령 실행 시간 초과',
+                    'timestamp': datetime.now().isoformat()
+                }
+            except Exception as e:
+                logging.error(f"시스템 명령 실행 실패: {e}")
+                return {
+                    'success': False,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                }
+        
+        def extract_process_name(self, command):
+            """명령에서 프로세스 이름을 추출합니다."""
+            try:
+                # 명령의 첫 번째 부분을 프로세스 이름으로 사용
+                parts = command.strip().split()
+                if parts:
+                    # 경로에서 파일명만 추출
+                    process_name = os.path.basename(parts[0])
+                    return process_name
+                return None
+            except Exception as e:
+                logging.error(f"프로세스 이름 추출 실패: {e}")
+                return None
+        
+        def on_any_event(self, event, data):
+            """모든 소켓 이벤트를 받아서 로그로 출력합니다."""
+            print(f"📡 [소켓 이벤트] 수신: {event} - 데이터: {data}")
+            logging.info(f"소켓 이벤트 수신: {event} - 데이터: {data}")
             
-            # 트레이 아이콘 생성 (가능한 경우)
-            if PYTRAY_AVAILABLE:
+            # connection_check 이벤트를 특별히 처리
+            if event == 'connection_check':
+                print(f"🔍 [소켓 이벤트] connection_check 이벤트 감지!")
+                self.on_connection_check(data)
+        
+        def on_heartbeat_response(self, data):
+            """하트비트 응답을 받았을 때 호출됩니다."""
+            try:
+                status = data.get('status', '')
+                message = data.get('message', '')
+                timestamp = data.get('timestamp', '')
+                
+                print(f"💚 [하트비트 응답] 수신: {status} - {message} (시간: {timestamp})")
+                logging.info(f"하트비트 응답 수신: {status} - {message}")
+                
+                # 하트비트 응답을 받으면 연결이 정상임을 확인하고 트레이 아이콘을 녹색으로 업데이트
+                if status == 'ok':
+                    print(f"🟢 [하트비트 응답] 연결 상태 확인됨 - 트레이 아이콘 녹색으로 업데이트")
+                    self.update_tray_icon()
+                else:
+                    print(f"🔴 [하트비트 응답] 연결 상태 오류: {message}")
+                
+            except Exception as e:
+                print(f"❌ [하트비트 응답] 처리 중 오류: {e}")
+                logging.error(f"하트비트 응답 처리 중 오류: {e}")
+        
+        def start(self):
+            """
+            클라이언트를 시작합니다.
+            """
+            try:
+                print("=========================================")
+                print(" Launching Switchboard Plus v2.0 Client")
+                print("=========================================")
+                print(f"🚀 Starting client with computer name: {self.client_name}")
+                print("To stop the client, press Ctrl+C in this window.")
+                print(f"서버: {self.server_url}")
+                
+                # 트레이 아이콘 생성
                 self.create_tray_icon()
-                print("🖥️ 트레이 아이콘이 생성되었습니다. 시스템 트레이를 확인하세요.")
-            else:
-                print("⚠️ 트레이 아이콘을 사용할 수 없습니다. 콘솔 모드로 실행됩니다.")
-            
-            # 서버에 등록
-            if not self.register_with_server():
-                print(f"⚠️ 서버 등록 실패했지만 클라이언트는 계속 실행됩니다.")
-            
-            # Socket.io 연결
-            if not self.connect_socket():
-                print(f"⚠️ Socket.io 연결 실패했지만 클라이언트는 계속 실행됩니다.")
-            
-            # 트레이 아이콘 표시 (가능한 경우)
-            if self.icon and PYTRAY_AVAILABLE:
-                self.icon.run()
-            else:
-                # 콘솔 모드로 실행
-                print("콘솔 모드로 실행 중... Ctrl+C로 종료하세요.")
-                try:
-                    while self.running:
+                
+                # 트레이 아이콘을 별도 스레드에서 실행
+                if self.icon and PYTRAY_AVAILABLE:
+                    import threading
+                    tray_thread = threading.Thread(target=self.run_tray_icon, daemon=True)
+                    tray_thread.start()
+                    print("✅ 트레이 아이콘 스레드 시작")
+                    
+                    # 초기 트레이 아이콘 업데이트 (빨간색으로 시작)
+                    self.update_tray_icon()
+                
+                # 프로세스 모니터링 시작
+                self.start_process_monitor()
+                
+                # Socket.io 연결
+                if self.connect_socket():
+                    print("✅ Socket.io 연결 성공")
+                    logging.info("Socket.io 연결 성공")
+                    # 연결 성공 시 트레이 아이콘 업데이트 (녹색으로 변경)
+                    self.update_tray_icon()
+                else:
+                    print("⚠️ Socket.io 연결 실패")
+                    logging.warning("Socket.io 연결 실패")
+                    # 연결 실패 시 트레이 아이콘 업데이트 (빨간색 유지)
+                    self.update_tray_icon()
+                
+                # 메인 루프
+                while self.running:
+                    try:
+                        # 트레이 아이콘 이벤트 처리
+                        if hasattr(self, 'icon') and self.icon:
+                            self.process_tk_events()
+                        
                         time.sleep(1)
-                except KeyboardInterrupt:
-                    print("\n🛑 사용자에 의해 종료됨")
-                    self.stop()
-            
-        except Exception as e:
-            print(f"❌ 클라이언트 시작 중 오류: {e}")
-            logging.error(f"클라이언트 시작 중 오류: {e}")
+                    except KeyboardInterrupt:
+                        print("\n🛑 사용자에 의해 종료됨")
+                        break
+                    except Exception as e:
+                        logging.error(f"메인 루프 오류: {e}")
+                        time.sleep(5)
+                
+            except KeyboardInterrupt:
+                print("\n🛑 사용자에 의해 종료됨")
+            except Exception as e:
+                logging.error(f"클라이언트 실행 중 오류: {e}")
+                print(f"❌ 클라이언트 실행 중 오류: {e}")
+            finally:
+                self.stop()
+        
+        def stop_client(self):
+            """클라이언트를 중지합니다."""
             self.stop()
-    
-    def stop_client(self):
-        """클라이언트를 종료합니다."""
-        self.stop()
-    
-    def stop(self):
-        """클라이언트를 종료합니다."""
-        try:
-            print(f"🛑 클라이언트 종료: {self.client_name}")
-            logging.info(f"클라이언트 종료: {self.client_name}")
-            
+        
+        def stop(self):
+            """클라이언트를 중지합니다."""
+            print(f"🛑 클라이언트 종료 중: {self.client_name}")
             self.running = False
+            
+            # 현재 서버 설정 저장
+            try:
+                self.save_server_config(self.server_url)
+                print(f"✅ 서버 설정 저장됨: {self.server_url}")
+            except Exception as e:
+                print(f"⚠️ 서버 설정 저장 실패: {e}")
             
             # 실행 중인 프로세스 정지
             self.stop_running_processes()
             
-            # Socket.io 연결 해제
-            if self.sio.connected:
-                self.sio.disconnect()
-            
             # 트레이 아이콘 제거
             if self.icon and PYTRAY_AVAILABLE:
-                self.icon.stop()
+                try:
+                    self.icon.stop()
+                except Exception as e:
+                    print(f"⚠️ 트레이 아이콘 제거 중 오류: {e}")
             
+            try:
+                if self.sio.connected:
+                    self.sio.disconnect()
+            except Exception as e:
+                print(f"⚠️ 소켓 연결 해제 중 오류: {e}")
+            
+            logging.info("클라이언트 종료")
             print(f"✅ 클라이언트 종료 완료: {self.client_name}")
-            
+        
+        def load_server_config(self):
+            """저장된 서버 설정을 로드합니다."""
+            try:
+                # 실행 파일과 같은 디렉토리의 config.json 파일 사용
+                if getattr(sys, 'frozen', False):
+                    # PyInstaller로 패키징된 경우
+                    config_file = os.path.join(os.path.dirname(sys.executable), "config.json")
+                else:
+                    # 개발 환경
+                    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        self.server_url = config.get('server_url', "http://localhost:8000")
+                        print(f"✅ 서버 설정 로드됨: {self.server_url}")
+                        logging.info(f"서버 설정 로드됨: {self.server_url}")
+                        return True
+                else:
+                    print("ℹ️ 저장된 서버 설정이 없습니다. 기본값 사용: http://localhost:8000")
+                    logging.info("저장된 서버 설정이 없습니다. 기본값 사용")
+                    return False
+            except Exception as e:
+                print(f"❌ 서버 설정 로드 실패: {e}")
+                logging.error(f"서버 설정 로드 실패: {e}")
+                return False
+        
+        def save_server_config(self, server_url):
+            """서버 설정을 저장합니다."""
+            try:
+                # 실행 파일과 같은 디렉토리의 config.json 파일 사용
+                if getattr(sys, 'frozen', False):
+                    # PyInstaller로 패키징된 경우
+                    config_file = os.path.join(os.path.dirname(sys.executable), "config.json")
+                else:
+                    # 개발 환경
+                    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                
+                config = {
+                    'server_url': server_url,
+                    'saved_at': datetime.now().isoformat()
+                }
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+                print(f"✅ 서버 설정 저장됨: {server_url}")
+                logging.info(f"서버 설정 저장됨: {server_url}")
+                return True
+            except Exception as e:
+                print(f"❌ 서버 설정 저장 실패: {e}")
+                logging.error(f"서버 설정 저장 실패: {e}")
+                return False
+        
+        def reconnect_to_server(self, icon=None, item=None):
+            """서버에 재연결을 시도합니다."""
+            try:
+                print(f"🔄 서버 재연결 시도: {self.server_url}")
+                logging.info(f"서버 재연결 시도: {self.server_url}")
+                
+                # 기존 연결 해제
+                if self.sio.connected:
+                    self.sio.disconnect()
+                
+                # 잠시 대기 후 재연결
+                time.sleep(1)
+                
+                # 새 연결 시도
+                if self.connect_socket():
+                    print("✅ 서버 재연결 성공")
+                    logging.info("서버 재연결 성공")
+                    # 트레이 아이콘 색상 업데이트 (녹색으로 변경)
+                    self.update_tray_icon()
+                else:
+                    print("❌ 서버 재연결 실패")
+                    logging.error("서버 재연결 실패")
+                    # 트레이 아이콘 색상 업데이트 (빨간색으로 변경)
+                    self.update_tray_icon()
+                    
+            except Exception as e:
+                print(f"❌ 서버 재연결 중 오류: {e}")
+                logging.error(f"서버 재연결 중 오류: {e}")
+                # 트레이 아이콘 색상 업데이트 (빨간색으로 변경)
+                self.update_tray_icon()
+        
+        def process_tk_events(self):
+            while not self.tk_event_queue.empty():
+                func = self.tk_event_queue.get()
+                try:
+                    func()
+                except Exception as e:
+                    print(f"[TkEvent] 실행 오류: {e}")
+            if self.root:
+                self.root.after(100, self.process_tk_events)
+
+    def main():
+        """메인 함수"""
+        try:
+            client = UECMSTrayClient()
+            client.start()
+        except KeyboardInterrupt:
+            print("\n🛑 사용자에 의해 종료됨")
         except Exception as e:
-            print(f"❌ 클라이언트 종료 중 오류: {e}")
-            logging.error(f"클라이언트 종료 중 오류: {e}")
+            print(f"❌ 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
 
-def main():
-    """메인 함수"""
-    print("=" * 50)
-    print(" Launching UE CMS Client with Tray Icon")
-    print("=" * 50)
-    
-    # 서버 URL 설정
-    server_url = "http://localhost:8000"
-    
-    print(f"🚀 Starting client with computer name")
-    if PYTRAY_AVAILABLE:
-        print("To stop the client, right-click the tray icon and select '종료'")
-    else:
-        print("To stop the client, press Ctrl+C in this window")
-    print(f"서버: {server_url}")
-    
-    try:
-        # 클라이언트 생성 및 시작
-        client = UECMSTrayClient(server_url)
-        client.start()
-    except KeyboardInterrupt:
-        print("\n🛑 사용자에 의해 종료됨")
-    except Exception as e:
-        print(f"❌ 클라이언트 실행 중 오류: {e}")
-        logging.error(f"클라이언트 실행 중 오류: {e}")
-    finally:
-        print("✅ 클라이언트 종료")
-        print("Client has been stopped.")
+    if __name__ == "__main__":
+        main()
 
-if __name__ == "__main__":
-    main() 
+except Exception as e:
+    print("[예외 발생]", e)
+    import traceback
+    traceback.print_exc()
+    input("계속하려면 엔터를 누르세요...") 

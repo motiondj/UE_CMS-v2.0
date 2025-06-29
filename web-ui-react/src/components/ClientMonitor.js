@@ -12,7 +12,8 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     name: '',
     ip_address: '',
     port: 8081,
-    description: ''
+    description: '',
+    mac_address: ''
   });
   const [macAddress, setMacAddress] = useState('');
   const [showMacEditModal, setShowMacEditModal] = useState(false);
@@ -62,9 +63,37 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       const result = await response.json();
 
       if (response.ok) {
-        showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. 연결을 확인하고 있습니다...`, 'success');
+        // MAC 주소가 입력된 경우 별도로 업데이트
+        if (formData.mac_address && formData.mac_address.trim()) {
+          const normalizedMac = normalizeMacAddress(formData.mac_address);
+          if (normalizedMac) {
+            try {
+              const macResponse = await fetch(`/api/clients/name/${result.name}/mac`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                  mac_address: normalizedMac,
+                  is_manual: true
+                })
+              });
+              
+              if (macResponse.ok) {
+                showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. MAC 주소도 함께 설정되었습니다.`, 'success');
+              } else {
+                showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. MAC 주소 설정에 실패했습니다.`, 'warning');
+              }
+            } catch (macError) {
+              showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. MAC 주소 설정에 실패했습니다.`, 'warning');
+            }
+          } else {
+            showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. MAC 주소 형식이 올바르지 않습니다.`, 'warning');
+          }
+        } else {
+          showToast(`클라이언트 "${formData.name}"이(가) 추가되었습니다. 연결을 확인하고 있습니다...`, 'success');
+        }
+        
         setShowAddModal(false);
-        setFormData({ name: '', ip_address: '', port: 8081, description: '' });
+        setFormData({ name: '', ip_address: '', port: 8081, description: '', mac_address: '' });
         // 클라이언트 목록 새로고침은 App.js의 socket listener가 처리
       } else {
         throw new Error(result.error || '클라이언트 추가에 실패했습니다.');
@@ -85,6 +114,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       name: client.name,
       ip_address: client.ip_address,
       port: client.port,
+      mac_address: client.mac_address || '',
     });
     setShowEditModal(true);
   };
@@ -94,14 +124,44 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     if (!selectedClient) return;
 
     try {
+      // 기존 정보와 MAC 주소 분리
+      const { mac_address, ...restEditFormData } = editFormData;
+      // 1. 일반 정보 업데이트
       const response = await fetch(`/api/clients/${selectedClient.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editFormData),
+        body: JSON.stringify(restEditFormData),
       });
       const updatedClient = await response.json();
 
       if (response.ok) {
+        // 2. MAC 주소가 변경된 경우 별도 API 호출
+        if (
+          typeof mac_address === 'string' &&
+          mac_address.trim() &&
+          mac_address !== (selectedClient.mac_address || '')
+        ) {
+          // MAC 주소 정규화
+          const normalizedMac = normalizeMacAddress(mac_address);
+          if (!normalizedMac) {
+            showToast('올바른 MAC 주소 형식이 아닙니다. (예: 00:11:22:33:44:55 또는 001122334455)', 'error');
+            return;
+          }
+          const macRes = await fetch(`/api/clients/name/${selectedClient.name}/mac`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              mac_address: normalizedMac,
+              is_manual: true  // 수동 입력임을 명시
+            })
+          });
+          if (macRes.ok) {
+            showToast(`MAC 주소가 업데이트되었습니다: ${normalizedMac}`, 'success');
+            updatedClient.mac_address = normalizedMac;
+          } else {
+            showToast('MAC 주소 업데이트에 실패했습니다.', 'warning');
+          }
+        }
         showToast(`클라이언트 "${updatedClient.name}" 정보가 수정되었습니다.`, 'success');
         setShowEditModal(false);
         setSelectedClient(updatedClient);
@@ -141,12 +201,19 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
   const updateMacAddress = async () => {
     if (!selectedClient || !macAddress) return;
 
+    // MAC 주소 형식 정규화
+    const normalizedMac = normalizeMacAddress(macAddress);
+    if (!normalizedMac) {
+      showToast('올바른 MAC 주소 형식이 아닙니다. (예: 00:11:22:33:44:55 또는 001122334455)', 'error');
+      return;
+    }
+
     try {
       const response = await fetch(`/api/clients/${selectedClient.id}/mac-address`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          mac_address: macAddress,
+          mac_address: normalizedMac,
           is_manual: true  // 수동 입력임을 명시
         })
       });
@@ -154,22 +221,43 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       const result = await response.json();
 
       if (response.ok) {
-        showToast(`MAC 주소가 업데이트되었습니다: ${macAddress}`, 'success');
+        showToast(`MAC 주소가 업데이트되었습니다: ${normalizedMac}`, 'success');
         
         // 클라이언트 목록에서 MAC 주소 실시간 업데이트
-        onClientUpdate({
+        const updatedClient = {
           ...selectedClient,
-          mac_address: macAddress
-        });
+          mac_address: normalizedMac
+        };
+        onClientUpdate(updatedClient);
         
+        // 모달 닫기
         setShowMacEditModal(false);
         setMacAddress('');
+        
+        // 클라이언트 상세 모달도 업데이트된 정보로 다시 열기
+        setTimeout(() => {
+          showClientDetail(updatedClient);
+        }, 100);
       } else {
         throw new Error(result.error || 'MAC 주소 업데이트에 실패했습니다.');
       }
     } catch (error) {
       showToast(error.message, 'error');
     }
+  };
+
+  // MAC 주소 형식 정규화 함수
+  const normalizeMacAddress = (mac) => {
+    if (!mac) return null;
+    
+    // 모든 공백과 특수문자 제거
+    let cleaned = mac.replace(/[^0-9A-Fa-f]/g, '');
+    
+    // 12자리 16진수인지 확인
+    if (cleaned.length !== 12) return null;
+    
+    // XX:XX:XX:XX:XX:XX 형식으로 변환
+    return cleaned.match(/.{2}/g).join(':').toUpperCase();
   };
 
   const openMacEditModal = async (client) => {
@@ -401,6 +489,19 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
               </div>
               
               <div className="form-group">
+                <label htmlFor="clientMacAddress">📡 MAC 주소 (선택)</label>
+                <input 
+                  type="text" 
+                  id="clientMacAddress"
+                  className="form-input" 
+                  placeholder="00:11:22:33:44:55 또는 001122334455" 
+                  value={formData.mac_address}
+                  onChange={(e) => setFormData(prev => ({ ...prev, mac_address: e.target.value.toUpperCase() }))}
+                />
+                <small className="form-help">Wake-on-LAN 기능을 위해 MAC 주소를 설정하세요. 다양한 형식 지원 (XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXXXXXXXXXX)</small>
+              </div>
+              
+              <div className="form-group">
                 <label htmlFor="clientDescription">📝 설명 (선택)</label>
                 <textarea 
                   id="clientDescription"
@@ -446,6 +547,9 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                       <div>🏷️ 이름: <strong>{selectedClient.name}</strong></div>
                       <div>🌐 IP 주소: <strong>{selectedClient.ip_address}</strong></div>
                       <div>🔌 포트: <strong>{selectedClient.port}</strong></div>
+                      <div>📡 MAC 주소: <span id="mac-address-display">
+                        {selectedClient.mac_address && selectedClient.mac_address.trim() ? selectedClient.mac_address : '설정되지 않음'}
+                      </span></div>
                       <div>📊 상태: <span className={`status-badge ${selectedClient.status}`}>
                         {selectedClient.status}
                       </span></div>
@@ -454,19 +558,6 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                         {selectedClient.status === 'running' ? `exec_${selectedClient.id}_${Date.now().toString().slice(-6)}` : '없음'}
                       </span></div>
                     </div>
-                  </div>
-                  
-                  {/* MAC 주소 정보 */}
-                  <div className="info-section">
-                    <h4>🔗 네트워크 정보</h4>
-                    <div className="info-grid">
-                      <div>📡 MAC 주소: <span id="mac-address-display">
-                        {selectedClient.mac_address && selectedClient.mac_address.trim() ? selectedClient.mac_address : '설정되지 않음'}
-                      </span></div>
-                    </div>
-                    <button className="btn btn-secondary mac-edit-btn" onClick={() => openMacEditModal(selectedClient)}>
-                      주소 수정
-                    </button>
                   </div>
                 </div>
 
@@ -519,7 +610,10 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                         ⚡ 끄기
                       </button>
                     </div>
-                    <p className="info-text">💡 MAC 주소가 설정된 클라이언트만 Wake-on-LAN이 가능합니다.</p>
+                    {/* 전원 제어 안내 문구 스타일 통일: info-section의 info-grid 스타일 적용 */}
+                    <div className="info-grid">
+                      <span>💡 MAC 주소가 설정된 클라이언트만 Wake-on-LAN이 가능합니다.</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -593,6 +687,19 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 />
               </div>
               
+              <div className="form-group">
+                <label htmlFor="editClientMac">📡 MAC 주소</label>
+                <input 
+                  type="text" 
+                  id="editClientMac"
+                  className="form-input" 
+                  placeholder="00:11:22:33:44:55 또는 001122334455" 
+                  value={editFormData.mac_address || ''}
+                  onChange={(e) => setEditFormData(prev => ({ ...prev, mac_address: e.target.value.toUpperCase() }))}
+                />
+                <small className="form-help">Wake-on-LAN 기능을 위해 MAC 주소를 설정하세요. 다양한 형식 지원 (XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXXXXXXXXXX)</small>
+              </div>
+              
               <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>
                   취소
@@ -621,13 +728,12 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
                 type="text" 
                 id="macAddress"
                 className="form-input" 
-                placeholder="00:11:22:33:44:55" 
-                pattern="^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$"
+                placeholder="00:11:22:33:44:55 또는 001122334455" 
                 value={macAddress}
                 onChange={(e) => setMacAddress(e.target.value.toUpperCase())}
                 required
               />
-              <small className="form-help">Wake-on-LAN 기능을 위해 MAC 주소를 설정하세요. (XX:XX:XX:XX:XX:XX 형식)</small>
+              <small className="form-help">Wake-on-LAN 기능을 위해 MAC 주소를 설정하세요. 다양한 형식 지원 (XX:XX:XX:XX:XX:XX, XX-XX-XX-XX-XX-XX, XXXXXXXXXXXX)</small>
             </div>
             
             <div className="modal-actions">
