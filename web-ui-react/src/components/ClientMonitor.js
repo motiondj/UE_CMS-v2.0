@@ -6,7 +6,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
-  const [isEditing, setIsEditing] = useState(false);
+  const isEditing = false;
   const [editFormData, setEditFormData] = useState({});
   const [formData, setFormData] = useState({
     name: '',
@@ -17,20 +17,6 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
   });
   const [macAddress, setMacAddress] = useState('');
   const [showMacEditModal, setShowMacEditModal] = useState(false);
-  const [currentMacAddress, setCurrentMacAddress] = useState('');
-
-  // 클라이언트 상세 모달이 열릴 때 MAC 주소 로드
-  React.useEffect(() => {
-    if (showDetailModal && selectedClient) {
-      // 클라이언트 객체의 mac_address 속성을 직접 사용
-      const mac = selectedClient.mac_address || '설정되지 않음';
-      setCurrentMacAddress(mac);
-      const macDisplay = document.getElementById('mac-address-display');
-      if (macDisplay) {
-        macDisplay.textContent = mac;
-      }
-    }
-  }, [showDetailModal, selectedClient]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -260,13 +246,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     return cleaned.match(/.{2}/g).join(':').toUpperCase();
   };
 
-  const openMacEditModal = async (client) => {
-    setSelectedClient(client);
-    // 클라이언트의 mac_address 속성을 직접 사용
-    const currentMac = client.mac_address || '';
-    setMacAddress(currentMac);
-    setShowMacEditModal(true);
-  };
+
 
   const powerAction = async (clientId, action) => {
     const actionNames = {
@@ -298,36 +278,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     }
   };
 
-  const bulkPowerAction = async (action, clientIds) => {
-    const actionNames = {
-      'wake_all': '켜기',
-      'restart_all': '재부팅',
-      'shutdown_all': '끄기'
-    };
-    
-    const actionName = actionNames[action];
-    const count = clientIds.length;
-    
-    if (window.confirm(`정말 선택된 ${count}개 클라이언트를 모두 ${actionName}하시겠습니까?`)) {
-      try {
-        const response = await fetch('/api/bulk/power', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, client_ids: clientIds })
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok && result.success) {
-          showToast(`일괄 전원 ${actionName} 명령이 전송되었습니다. (성공: ${result.results.successful}, 실패: ${result.results.failed})`, 'success');
-        } else {
-          throw new Error(result.error || `일괄 전원 ${actionName}에 실패했습니다.`);
-        }
-      } catch (error) {
-        showToast(error.message, 'error');
-      }
-    }
-  };
+
 
   const getStatusIndicator = (status) => {
     let color;
@@ -374,9 +325,6 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       <div className="monitor-header">
         <h2 className="section-title">
           🖥️ 디스플레이 서버 모니터링
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-            자동 새로고침: <span>30초</span>
-          </span>
         </h2>
         <button 
           className="btn btn-secondary btn-with-text" 

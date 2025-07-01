@@ -159,21 +159,29 @@ class UECMSClient:
     
     def start_heartbeat(self):
         def heartbeat_loop():
+            print(f"[하트비트] 루프 시작: {self.client_name}")
             while self.running:
                 try:
                     ip = self.get_local_ip()
-                    print(f"[하트비트] 전송: 이름={self.client_name}, IP={ip}, 시간={datetime.now().isoformat()}")
-                    logging.info(f"[하트비트] 전송: 이름={self.client_name}, IP={ip}, 시간={datetime.now().isoformat()}")
-                    self.sio.emit('heartbeat', {
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"[하트비트] 전송 시작: 이름={self.client_name}, IP={ip}, 시간={current_time}")
+                    logging.info(f"[하트비트] 전송 시작: 이름={self.client_name}, IP={ip}, 시간={current_time}")
+                    
+                    heartbeat_data = {
                         'clientName': self.client_name,
                         'ip_address': ip,
                         'timestamp': datetime.now().isoformat()
-                    })
-                    time.sleep(30)
+                    }
+                    print(f"[하트비트] 데이터: {heartbeat_data}")
+                    
+                    self.sio.emit('heartbeat', heartbeat_data)
+                    print(f"[하트비트] 전송 완료: {self.client_name}")
+                    
+                    time.sleep(5)  # 5초마다 하트비트 전송
                 except Exception as e:
                     print(f"[하트비트] 전송 오류: {e}")
                     logging.error(f"[하트비트] 전송 오류: {e}")
-                    time.sleep(5)
+                    time.sleep(2)  # 오류 시 2초 후 재시도
         import threading
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
@@ -199,20 +207,14 @@ class UECMSClient:
         """서버로부터 명령 실행 요청을 받습니다."""
         try:
             command = data.get('command')
-            target_client_id = data.get('clientId')
             target_client_name = data.get('clientName')
             preset_id = data.get('presetId')
             
             print(f"📨 명령어 수신: {data}")
             logging.info(f"명령어 수신: {data}")
             
-            # 클라이언트 ID나 이름으로 대상 확인
-            print(f"🔍 대상 확인: 받은 ID={target_client_id}, 내 ID={self.client_id}, 받은 이름={target_client_name}, 내 이름={self.client_name}")
-            
-            if target_client_id and target_client_id != self.client_id:
-                print(f"❌ 클라이언트 ID 불일치: {target_client_id} != {self.client_id}")
-                logging.info(f"클라이언트 ID 불일치로 명령 무시: {target_client_id} != {self.client_id}")
-                return
+            # 클라이언트 이름으로 대상 확인
+            print(f"🔍 대상 확인: 받은 이름={target_client_name}, 내 이름={self.client_name}")
             
             if target_client_name and target_client_name != self.client_name:
                 print(f"❌ 클라이언트 이름 불일치: {target_client_name} != {self.client_name}")
@@ -307,8 +309,8 @@ class UECMSClient:
     def on_stop_command(self, data):
         """정지 명령을 받았을 때 호출됩니다."""
         try:
-            client_name = data.get('client_name', '')
-            preset_id = data.get('preset_id')
+            client_name = data.get('clientName', '')
+            preset_id = data.get('presetId')
             
             if client_name != self.client_name:
                 return  # 다른 클라이언트용 명령이면 무시

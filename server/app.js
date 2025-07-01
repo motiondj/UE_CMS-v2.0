@@ -58,10 +58,11 @@ function initializeDatabase(callback) {
     `CREATE TABLE IF NOT EXISTS presets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      command TEXT NOT NULL,
-      group_id INTEGER,
+      description TEXT,
+      target_group_id INTEGER,
+      client_commands TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (group_id) REFERENCES groups (id)
+      FOREIGN KEY (target_group_id) REFERENCES groups (id)
     )`,
     `CREATE TABLE IF NOT EXISTS execution_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,7 +153,7 @@ function checkDatabaseIntegrity() {
   // 3. 존재하지 않는 클라이언트를 참조하는 실행 히스토리 정리
   db.run(`
     DELETE FROM execution_history 
-    WHERE client_id NOT IN (SELECT id FROM clients)
+    WHERE client_name NOT IN (SELECT name FROM clients)
   `, function(err) {
     if (err) {
       console.error('❌ 실행 히스토리 정리 실패:', err.message);
@@ -535,13 +536,12 @@ app.get('/api/executions', (req, res) => {
       eh.id,
       eh.status,
       eh.executed_at,
-      eh.created_at,
       p.name as preset_name,
       c.name as client_name
     FROM execution_history eh
     LEFT JOIN presets p ON eh.preset_id = p.id
-    LEFT JOIN clients c ON eh.client_id = c.id
-    ORDER BY eh.created_at DESC
+    LEFT JOIN clients c ON eh.client_name = c.name
+    ORDER BY eh.executed_at DESC
     LIMIT 50
   `;
   
@@ -769,7 +769,6 @@ app.post('/api/presets/:id/execute', (req, res) => {
         
         if (clientSocket && clientSocket.connected) {
           clientSocket.emit('execute_command', {
-            clientId: client.id,
             clientName: client.name,
             command: command,
             presetId: preset.id
@@ -901,7 +900,6 @@ app.post('/api/presets/:id/stop', (req, res) => {
         
         if (clientSocket && clientSocket.connected) {
           clientSocket.emit('stop_command', {
-            clientId: client.id,
             clientName: client.name,
             presetId: preset.id
           });
@@ -1511,16 +1509,16 @@ io.on('connection', (socket) => {
   
   // 하트비트 응답
   socket.on('heartbeat', (data) => {
-    const { ip_address, timestamp } = data;
+    const { clientName, ip_address, timestamp } = data;
     const now = new Date().toISOString();
     const timeStr = new Date().toLocaleTimeString();
     // 클라이언트가 보낸 ip_address가 있으면 우선 사용, 없으면 소켓 주소 사용
     const clientIP = ip_address || normalizeIP(socket.handshake.address || '127.0.0.1');
     
-    console.log(`💓 하트비트 수신: IP=${clientIP}, 시간=${timeStr}`);
+    console.log(`💓 하트비트 수신: 이름=${clientName}, IP=${clientIP}, 시간=${timeStr}`);
     
-    // IP 주소로 기존 클라이언트 찾기
-    db.get('SELECT * FROM clients WHERE ip_address = ?', [clientIP], (err, existingClient) => {
+    // 클라이언트 이름으로 먼저 찾기, 없으면 IP로 찾기
+    db.get('SELECT * FROM clients WHERE name = ? OR ip_address = ?', [clientName, clientIP], (err, existingClient) => {
       if (err) {
         console.error(`❌ 클라이언트 조회 실패: IP ${clientIP} - ${err.message}`);
         return;
@@ -1564,15 +1562,51 @@ io.on('connection', (socket) => {
           }
         );
       } else {
-        // 클라이언트가 등록되지 않았으면 무시 (등록은 register_client에서만 처리)
-        console.log(`⚠️ 하트비트에서 등록되지 않은 클라이언트: IP ${clientIP} - 무시`);
+        // 클라이언트가 등록되지 않았으면 자동으로 다시 등록
+        console.log(`🔄 하트비트에서 등록되지 않은 클라이언트: IP ${clientIP} - 자동 재등록 시도`);
         
-        // 등록되지 않은 클라이언트에도 응답 전송
-        socket.emit('heartbeat_response', {
-          status: 'error',
-          timestamp: new Date().toISOString(),
-          message: '등록되지 않은 클라이언트'
-        });
+        // 클라이언트 이름 추출 (소켓에서 가져오거나 기본값 사용)
+        const clientName = socket.clientName || `Client_${clientIP.replace(/\./g, '_')}`;
+        
+        // 클라이언트 자동 재등록
+        db.run(
+          'INSERT INTO clients (name, ip_address, port, status, last_seen) VALUES (?, ?, ?, ?, ?)',
+          [clientName, clientIP, 8081, 'online', new Date().toISOString()],
+          function(err) {
+            if (err) {
+              console.error(`❌ 클라이언트 자동 재등록 실패: ${clientName} - ${err.message}`);
+              socket.emit('heartbeat_response', {
+                status: 'error',
+                timestamp: new Date().toISOString(),
+                message: '자동 재등록 실패'
+              });
+              return;
+            }
+            
+            const newClientId = this.lastID;
+            console.log(`✅ 클라이언트 자동 재등록 성공: ${clientName} (ID: ${newClientId})`);
+            
+            // 소켓 연결 정보 저장
+            connectedClients.set(clientName, socket);
+            socket.clientName = clientName;
+            
+            // 새 클라이언트 정보 조회
+            db.get('SELECT * FROM clients WHERE id = ?', [newClientId], (err, newClient) => {
+              if (!err && newClient) {
+                // 웹 UI에 새 클라이언트 추가 알림
+                io.emit('client_added', newClient);
+                console.log(`📡 새 클라이언트 추가 이벤트 전송: ${clientName}`);
+              }
+            });
+            
+            // 하트비트 응답 전송
+            socket.emit('heartbeat_response', {
+              status: 'ok',
+              timestamp: new Date().toISOString(),
+              message: '자동 재등록 완료'
+            });
+          }
+        );
       }
     });
   });
@@ -1923,7 +1957,7 @@ setInterval(() => {
   );
 }, 60000); // 60초마다로 연장
 
-// 기본 라우트
+// 기본 라우트 - 웹 UI 서빙
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
