@@ -1,6 +1,5 @@
 const socketIo = require('socket.io');
 const ClientModel = require('../models/Client');
-const logger = require('../utils/logger');
 const config = require('../config/server');
 
 class SocketService {
@@ -23,9 +22,9 @@ class SocketService {
       const isWebUI = clientIP === '127.0.0.1' || clientIP === '::1';
       
       if (isWebUI) {
-        logger.debug(`웹 UI 연결: ${socket.id} (IP: ${clientIP})`);
+        console.log(`[DEBUG] 웹 UI 연결: ${socket.id} (IP: ${clientIP})`);
       } else {
-        logger.info(`클라이언트 연결: ${socket.id} (IP: ${clientIP})`);
+        console.log(`[INFO] 클라이언트 연결: ${socket.id} (IP: ${clientIP})`);
       }
       
       this.handleConnection(socket);
@@ -35,19 +34,19 @@ class SocketService {
     this.startHealthCheck();
     this.startOfflineCheck();
     
-    logger.info('Socket.IO 서비스 초기화 완료');
+    console.log('[INFO] Socket.IO 서비스 초기화 완료');
   }
 
   handleConnection(socket) {
     // 클라이언트 등록
     socket.on('register_client', (data) => {
-      logger.info(`클라이언트 등록 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
+      console.log(`[INFO] 클라이언트 등록 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
       this.handleRegister(socket, data);
     });
     
     // 하트비트
     socket.on('heartbeat', (data) => {
-      logger.info(`하트비트 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
+      console.log(`[INFO] 하트비트 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
       this.handleHeartbeat(socket, data);
     });
     
@@ -66,7 +65,7 @@ class SocketService {
     
     // ping 이벤트 (연결 상태 확인용)
     socket.on('ping', (data) => {
-      logger.debug(`ping 수신: ${socket.id}`);
+      console.log(`[DEBUG] ping 수신: ${socket.id}`);
       socket.emit('pong', { timestamp: new Date().toISOString() });
     });
     
@@ -76,9 +75,9 @@ class SocketService {
       const isWebUI = clientIP === '127.0.0.1' || clientIP === '::1';
       
       if (isWebUI) {
-        logger.debug(`웹 UI 연결 해제: ${socket.id} (이유: ${reason})`);
+        console.log(`[DEBUG] 웹 UI 연결 해제: ${socket.id} (이유: ${reason})`);
       } else {
-        logger.info(`클라이언트 연결 해제: ${socket.id} (이유: ${reason})`);
+        console.log(`[INFO] 클라이언트 연결 해제: ${socket.id} (이유: ${reason})`);
       }
       
       this.handleDisconnect(socket);
@@ -86,7 +85,7 @@ class SocketService {
     
     // 에러 처리
     socket.on('error', (error) => {
-      logger.error(`소켓 에러: ${socket.id} - ${error}`);
+      console.log(`[ERROR] 소켓 에러: ${socket.id} - ${error}`);
     });
     
     // 새로운 이벤트들 추가 (문서 5번 정확히 따름)
@@ -117,7 +116,7 @@ class SocketService {
     // 재연결 성공 알림
     socket.on('reconnection_success', async (data) => {
       const { clientName } = data;
-      logger.info(`클라이언트 재연결 성공: ${clientName}`);
+      console.log(`[INFO] 클라이언트 재연결 성공: ${clientName}`);
       
       // 재연결 타이머 정리
       this.clearReconnectTimer(clientName);
@@ -143,11 +142,11 @@ class SocketService {
       
       if (client) {
         socket.clientName = client.name;
-        logger.info(`기존 클라이언트 발견: ${client.name} (ID: ${client.id})`);
+        console.log(`[INFO] 기존 클라이언트 발견: ${client.name} (ID: ${client.id})`);
       } else {
         // 새 클라이언트 등록
         client = await ClientModel.create({ name, ip_address: clientIP });
-        logger.info(`새 클라이언트 등록: ${name} (ID: ${client.id})`);
+        console.log(`[INFO] 새 클라이언트 등록: ${name} (ID: ${client.id})`);
       }
       
       // 소켓 연결 관리
@@ -168,10 +167,10 @@ class SocketService {
         message: '클라이언트 등록이 완료되었습니다.'
       });
       
-      logger.info(`클라이언트 등록 완료 응답 전송: ${client.name}`);
+      console.log(`[INFO] 클라이언트 등록 완료 응답 전송: ${client.name}`);
       
     } catch (error) {
-      logger.error('클라이언트 등록 실패:', error);
+      console.log(`[ERROR] 클라이언트 등록 실패:`, error);
       socket.emit('registration_failed', { 
         reason: error.message,
         message: '클라이언트 등록에 실패했습니다.'
@@ -184,7 +183,7 @@ class SocketService {
       const { clientName, ip_address, timestamp } = data;
       const clientIP = ip_address || this.normalizeIP(socket.handshake.address || '127.0.0.1');
       
-      logger.info(`하트비트 수신: ${clientName} (${clientIP})`);
+      console.log(`[INFO] 하트비트 수신: ${clientName} (${clientIP})`);
       
       // 하트비트 기록 업데이트 (문서 2.2 정확히 따름)
       this.clientHeartbeats.set(clientName, {
@@ -198,7 +197,7 @@ class SocketService {
       
       // 소켓 연결 상태 확인
       if (!socket.connected) {
-        logger.warn(`하트비트 처리 실패: 소켓이 연결되지 않음 - ${clientName}`);
+        console.log(`[WARN] 하트비트 처리 실패: 소켓이 연결되지 않음 - ${clientName}`);
         return;
       }
       
@@ -229,12 +228,12 @@ class SocketService {
           });
         }
         
-        logger.info(`하트비트 처리 완료: ${client.name}`);
+        console.log(`[INFO] 하트비트 처리 완료: ${client.name}`);
       } else {
-        logger.warn(`하트비트 처리 실패: 클라이언트를 찾을 수 없음 - ${clientName}`);
+        console.log(`[WARN] 하트비트 처리 실패: 클라이언트를 찾을 수 없음 - ${clientName}`);
       }
     } catch (error) {
-      logger.error('하트비트 처리 실패:', error);
+      console.log(`[ERROR] 하트비트 처리 실패:`, error);
       
       // 오류가 발생해도 클라이언트에게 알림
       if (socket && socket.connected) {
@@ -250,7 +249,7 @@ class SocketService {
 
   async handleProcessStatus(socket, data) {
     const { clientName, running_process_count, running_processes, status } = data;
-    logger.info(`프로세스 상태: ${clientName} - ${running_process_count}개 실행 중`);
+    console.log(`[INFO] 프로세스 상태: ${clientName} - ${running_process_count}개 실행 중`);
     
     try {
       const client = await ClientModel.findByName(clientName);
@@ -267,13 +266,13 @@ class SocketService {
         });
       }
     } catch (error) {
-      logger.error('프로세스 상태 처리 실패:', error);
+      console.log(`[ERROR] 프로세스 상태 처리 실패:`, error);
     }
   }
 
   async handleExecutionResult(socket, data) {
     const { executionId, clientName, status, result } = data;
-    logger.info(`실행 결과: ${clientName} - ${status}`);
+    console.log(`[INFO] 실행 결과: ${clientName} - ${status}`);
     
     // 실행 히스토리 업데이트
     if (executionId) {
@@ -303,7 +302,7 @@ class SocketService {
 
   async handleStopResult(socket, data) {
     const { clientName, status, result } = data;
-    logger.info(`중지 결과: ${clientName} - ${status}`);
+    console.log(`[INFO] 중지 결과: ${clientName} - ${status}`);
     
     // 클라이언트 상태 업데이트
     if (clientName) {
@@ -321,7 +320,7 @@ class SocketService {
 
   async handleConnectionCheckResponse(socket, data) {
     const { clientName, timestamp } = data;
-    logger.debug(`연결 확인 응답: ${clientName} - ${timestamp}`);
+    console.log(`[DEBUG] 연결 확인 응답: ${clientName} - ${timestamp}`);
     
     // 클라이언트가 응답했으므로 온라인 상태 유지
     if (clientName) {
@@ -342,7 +341,7 @@ class SocketService {
     const clientType = socket.clientType || 'Unknown';
     const clientName = socket.clientName || 'Unknown';
     
-    logger.info(`소켓 연결 해제: ${clientName} (${clientType})`);
+    console.log(`[INFO] 소켓 연결 해제: ${clientName} (${clientType})`);
     
     if (socket.clientName && !this.gracefulShutdown) {
       // 정상 종료가 아닌 경우에만 재연결 대기 처리
@@ -369,7 +368,7 @@ class SocketService {
               
               // 하트비트 여유시간 내라면 기다리기
               if (timeSinceLastHeartbeat < config.monitoring.heartbeatGracePeriod) {
-                logger.info(`클라이언트 ${clientName}: 하트비트 여유시간 내 - 오프라인 처리 연기`);
+                console.log(`[INFO] 클라이언트 ${clientName}: 하트비트 여유시간 내 - 오프라인 처리 연기`);
                 return;
               }
             }
@@ -383,11 +382,11 @@ class SocketService {
                 status: 'offline',
                 reason: '재연결 타임아웃'
               });
-              logger.info(`클라이언트 오프라인 처리 완료: ${clientName}`);
+              console.log(`[INFO] 클라이언트 오프라인 처리 완료: ${clientName}`);
             }
           }
         } catch (error) {
-          logger.error(`클라이언트 ${clientName} 오프라인 처리 중 오류:`, error);
+          console.log(`[ERROR] 클라이언트 ${clientName} 오프라인 처리 중 오류:`, error);
         }
       }, config.monitoring.reconnectionGracePeriod); // 2분 대기
       
@@ -429,13 +428,13 @@ class SocketService {
     if (timer) {
       clearTimeout(timer);
       this.clientReconnectTimers.delete(clientName);
-      logger.debug(`재연결 타이머 클리어: ${clientName}`);
+      console.log(`[DEBUG] 재연결 타이머 클리어: ${clientName}`);
     }
   }
 
   // 정상 종료 처리 (문서 2.4 정확히 따름)
   async gracefulShutdown() {
-    logger.info('Socket 서비스 정상 종료 시작...');
+    console.log('[INFO] Socket 서비스 정상 종료 시작...');
     this.gracefulShutdown = true;
     
     // 모든 클라이언트에게 서버 종료 알림
@@ -459,7 +458,7 @@ class SocketService {
     // Socket.IO 서버 정상 종료
     if (this.io) {
       this.io.close(() => {
-        logger.info('Socket.IO 서버 종료 완료');
+        console.log('[INFO] Socket.IO 서버 종료 완료');
       });
     }
   }
@@ -479,7 +478,7 @@ class SocketService {
     if (this.io) {
       // 클라이언트 상태 변화는 상세히 로깅
       if (event === 'client_status_changed') {
-        logger.info(`[STATUS] ${data.name}: ${data.status} (이유: ${data.reason || '없음'})`);
+        console.log(`[INFO] [STATUS] ${data.name}: ${data.status} (이유: ${data.reason || '없음'})`);
       }
       
       this.io.emit(event, data);
@@ -506,23 +505,25 @@ class SocketService {
 
   // 주기적인 상태 확인 (문서 2.5 정확히 따름)
   startHealthCheck() {
-    setInterval(async () => {
+    const self = this; // this 컨텍스트 보존
+    
+    const runHealthCheck = async () => {
       try {
         const onlineClients = await ClientModel.findOnlineClients();
-        logger.debug(`온라인 클라이언트 수: ${onlineClients.length}`);
+        console.log(`[DEBUG] 온라인 클라이언트 수: ${onlineClients.length}`);
         
         for (const client of onlineClients) {
           if (!client.name) {
-            logger.warn(`클라이언트 이름이 없음: ID=${client.id}`);
+            console.warn(`[WARN] 클라이언트 이름이 없음: ID=${client.id}`);
             continue;
           }
           
-          const socket = this.connectedClients.get(client.name);
-          const heartbeatRecord = this.clientHeartbeats.get(client.name);
+          const socket = self.connectedClients.get(client.name);
+          const heartbeatRecord = self.clientHeartbeats.get(client.name);
           
           if (socket && socket.connected) {
             // 연결된 클라이언트에게 연결 확인
-            logger.debug(`연결 확인 전송: ${client.name}`);
+            console.log(`[DEBUG] 연결 확인 전송: ${client.name}`);
             socket.emit('connection_check', {
               clientName: client.name,  // client_name → clientName으로 변경
               timestamp: new Date().toISOString(),
@@ -535,21 +536,21 @@ class SocketService {
             
             if (timeSinceLastHeartbeat > config.monitoring.offlineTimeout) {
               // 정말 오래된 경우에만 오프라인 처리
-              logger.info(`클라이언트 오프라인 처리: ${client.name} (마지막 하트비트: ${Math.round(timeSinceLastHeartbeat/1000)}초 전)`);
+              console.log(`[INFO] 클라이언트 오프라인 처리: ${client.name} (마지막 하트비트: ${Math.round(timeSinceLastHeartbeat/1000)}초 전)`);
               await ClientModel.updateStatus(client.id, 'offline');
-              this.emit('client_status_changed', { 
+              self.emit('client_status_changed', { 
                 name: client.name, 
                 status: 'offline',
                 reason: '하트비트 타임아웃'
               });
-              this.clientHeartbeats.delete(client.name);
+              self.clientHeartbeats.delete(client.name);
             }
             
           } else {
             // 소켓도 없고 하트비트 기록도 없는 경우
-            logger.info(`클라이언트 오프라인 처리: ${client.name} (연결 기록 없음)`);
+            console.log(`[INFO] 클라이언트 오프라인 처리: ${client.name} (연결 기록 없음)`);
             await ClientModel.updateStatus(client.id, 'offline');
-            this.emit('client_status_changed', { 
+            self.emit('client_status_changed', { 
               name: client.name, 
               status: 'offline',
               reason: '연결 없음'
@@ -557,21 +558,35 @@ class SocketService {
           }
         }
       } catch (error) {
-        logger.error('헬스 체크 중 오류:', error);
+        console.error('[ERROR] 헬스 체크 중 오류:', error);
       }
-    }, config.monitoring.connectionCheckInterval);
+      
+      // 다음 실행 예약
+      setTimeout(runHealthCheck, config.monitoring.connectionCheckInterval);
+    };
+    
+    // 첫 번째 실행 시작
+    runHealthCheck();
   }
 
   // 오프라인 처리
   startOfflineCheck() {
-    setInterval(async () => {
+    const self = this; // this 컨텍스트 보존
+    
+    const runOfflineCheck = async () => {
       const offlineCount = await ClientModel.markOfflineByTimeout(config.monitoring.offlineTimeout);
       
       if (offlineCount > 0) {
-        logger.info(`${offlineCount}개 클라이언트를 오프라인으로 변경`);
-        this.emit('clients_offline_updated');
+        console.log(`[INFO] ${offlineCount}개 클라이언트를 오프라인으로 변경`);
+        self.emit('clients_offline_updated');
       }
-    }, config.monitoring.offlineTimeout);
+      
+      // 다음 실행 예약
+      setTimeout(runOfflineCheck, config.monitoring.offlineTimeout);
+    };
+    
+    // 첫 번째 실행 시작
+    runOfflineCheck();
   }
 }
 

@@ -103,7 +103,33 @@ process.on('SIGINT', async () => {
 
 // 처리되지 않은 에러 핸들링
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // reason 객체를 안전하게 직렬화
+  let reasonStr = 'Unknown';
+  try {
+    if (reason instanceof Error) {
+      reasonStr = reason.message;
+    } else if (typeof reason === 'string') {
+      reasonStr = reason;
+    } else if (reason && typeof reason === 'object') {
+      reasonStr = JSON.stringify(reason);
+    } else {
+      reasonStr = String(reason);
+    }
+  } catch (e) {
+    reasonStr = 'Error serializing reason';
+  }
+  
+  console.log(`[ERROR] Unhandled Rejection: ${reasonStr}`);
+  
+  // Promise 객체도 안전하게 처리
+  let promiseStr = 'Unknown Promise';
+  try {
+    promiseStr = promise ? 'Promise' : 'No Promise';
+  } catch (e) {
+    promiseStr = 'Error serializing promise';
+  }
+  
+  console.log(`[ERROR] Promise: ${promiseStr}`);
 });
 
 process.on('uncaughtException', (error) => {
