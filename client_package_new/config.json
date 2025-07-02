@@ -1,8 +1,0 @@
-{
-  "server_url": "http://localhost:8000",
-  "client_name": "",
-  "auto_start": false,
-  "heartbeat_interval": 5,
-  "log_level": "INFO",
-  "enable_tray": true
-}

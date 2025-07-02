@@ -14,20 +14,27 @@ UE CMS (Unreal Engine Content Management System) v2.0은 nDisplay 환경에서 �
 ## 📁 프로젝트 구조
 
 ```
-ue-cms-v2/
+UE_CMS-v2.0/
 ├── server/                 # Node.js 서버
 │   ├── app.js             # 메인 서버 파일
 │   ├── package.json       # 서버 의존성
+│   ├── config/            # 서버 설정
+│   ├── controllers/       # API 컨트롤러
+│   ├── models/            # 데이터베이스 모델
+│   ├── routes/            # API 라우트
+│   ├── services/          # 비즈니스 로직
 │   └── ue_cms.db         # SQLite 데이터베이스
 ├── client/                # Python 클라이언트
 │   ├── client.py         # 메인 클라이언트
 │   ├── client_tray.py    # 트레이 아이콘 클라이언트
-│   └── requirements.txt  # Python 의존성
+│   ├── requirements.txt  # Python 의존성
+│   └── config.json       # 클라이언트 설정
 ├── web-ui-react/         # React 웹 UI
 │   ├── src/              # 소스 코드
 │   └── public/           # 정적 파일
-├── client_package/       # 배포용 클라이언트 패키지
-└── Docs/                 # 문서 및 가이드
+├── Docs/                 # 문서 및 가이드
+├── backup/               # 백업 파일들 (Git에서 제외됨)
+└── build scripts/        # 빌드 스크립트들
 ```
 
 ## 🛠️ 설치 및 실행
@@ -58,14 +65,11 @@ npm start
 ### 서버 시작
 ```bash
 start_server.bat
+# 또는
+start_server.ps1
 ```
 
 ### 클라이언트 시작
-```bash
-start_client.bat
-```
-
-### 트레이 클라이언트 시작
 ```bash
 client/start_client_tray.bat
 ```

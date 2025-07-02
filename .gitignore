@@ -14,6 +14,8 @@ node_modules/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # Logs
 *.log
@@ -69,3 +71,16 @@ Thumbs.db
 *.tmp
 *.temp 
 SyncGuard_V3/
+
+# Backup files
+backup/
+
+# Old/duplicate files
+*.old.js
+*_backup/
+*_old/
+
+# PyInstaller spec files (keep only current ones)
+# switchboard_client.spec
+# ue_cms_tray_client_debug.spec
+# client.spec

@@ -8,6 +8,11 @@ class SocketService {
     this.io = null;
     this.connectedClients = new Map();
     this.clientTimeouts = new Map();
+    
+    // 새로 추가할 속성들 (문서 2.1 정확히 따름)
+    this.clientHeartbeats = new Map();     // 하트비트 기록
+    this.clientReconnectTimers = new Map(); // 재연결 타이머
+    this.gracefulShutdown = false;         // 정상 종료 플래그
   }
 
   initialize(server) {
@@ -83,6 +88,46 @@ class SocketService {
     socket.on('error', (error) => {
       logger.error(`소켓 에러: ${socket.id} - ${error}`);
     });
+    
+    // 새로운 이벤트들 추가 (문서 5번 정확히 따름)
+    // 서버 상태 알림 이벤트 추가
+    socket.on('client_status_request', async (data) => {
+      try {
+        const { clientName } = data;
+        const client = await ClientModel.findByName(clientName);
+        
+        if (client) {
+          socket.emit('server_status_response', {
+            serverStatus: 'online',
+            clientStatus: client.status,
+            timestamp: new Date().toISOString(),
+            serverUptime: process.uptime(),
+            message: '서버가 정상 동작 중입니다.'
+          });
+        }
+      } catch (error) {
+        socket.emit('server_status_response', {
+          serverStatus: 'error',
+          timestamp: new Date().toISOString(),
+          message: '서버 상태 조회 중 오류 발생'
+        });
+      }
+    });
+    
+    // 재연결 성공 알림
+    socket.on('reconnection_success', async (data) => {
+      const { clientName } = data;
+      logger.info(`클라이언트 재연결 성공: ${clientName}`);
+      
+      // 재연결 타이머 정리
+      this.clearReconnectTimer(clientName);
+      
+      // 웹 UI에 알림
+      this.emit('client_reconnected', {
+        clientName: clientName,
+        timestamp: new Date().toISOString()
+      });
+    });
   }
 
   async handleRegister(socket, data) {
@@ -141,6 +186,16 @@ class SocketService {
       
       logger.info(`하트비트 수신: ${clientName} (${clientIP})`);
       
+      // 하트비트 기록 업데이트 (문서 2.2 정확히 따름)
+      this.clientHeartbeats.set(clientName, {
+        lastHeartbeat: new Date(),
+        consecutiveMisses: 0,
+        clientIP: clientIP
+      });
+      
+      // 재연결 타이머 클리어 (정상 연결됨)
+      this.clearReconnectTimer(clientName);
+      
       // 소켓 연결 상태 확인
       if (!socket.connected) {
         logger.warn(`하트비트 처리 실패: 소켓이 연결되지 않음 - ${clientName}`);
@@ -155,20 +210,22 @@ class SocketService {
         this.registerSocket(client.name, socket);
         socket.clientName = client.name;
         
-        // 상태 업데이트
+        // 상태 업데이트 (강제로 online 설정)
         await ClientModel.updateStatus(client.id, 'online');
         this.emit('client_status_changed', { 
           id: client.id, 
           name: client.name, 
-          status: 'online' 
+          status: 'online',
+          lastHeartbeat: new Date()
         });
         
-        // 하트비트 응답
+        // 하트비트 응답 (클라이언트에게 성공 알림)
         if (socket.connected) {
           socket.emit('heartbeat_response', {
             status: 'ok',
             timestamp: new Date().toISOString(),
-            message: '하트비트 수신 완료'
+            message: '하트비트 수신 완료',
+            nextHeartbeatIn: config.monitoring.healthCheckInterval
           });
         }
         
@@ -178,12 +235,14 @@ class SocketService {
       }
     } catch (error) {
       logger.error('하트비트 처리 실패:', error);
-      // 오류가 발생해도 소켓 연결은 유지
+      
+      // 오류가 발생해도 클라이언트에게 알림
       if (socket && socket.connected) {
         socket.emit('heartbeat_response', {
           status: 'error',
           timestamp: new Date().toISOString(),
-          message: '하트비트 처리 중 오류 발생'
+          message: '하트비트 처리 중 오류 발생',
+          shouldReconnect: true
         });
       }
     }
@@ -262,15 +321,19 @@ class SocketService {
 
   async handleConnectionCheckResponse(socket, data) {
     const { clientName, timestamp } = data;
-    logger.info(`연결 확인 응답: ${clientName} - ${timestamp}`);
+    logger.debug(`연결 확인 응답: ${clientName} - ${timestamp}`);
     
     // 클라이언트가 응답했으므로 온라인 상태 유지
     if (clientName) {
       const client = await ClientModel.findByName(clientName);
       if (client) {
-        // 상태와 last_seen 시간을 함께 업데이트
         await ClientModel.updateStatus(client.id, 'online');
-        logger.info(`클라이언트 온라인 상태 유지: ${clientName}`);
+        // 하트비트 기록도 업데이트
+        this.clientHeartbeats.set(clientName, {
+          lastHeartbeat: new Date(),
+          consecutiveMisses: 0,
+          clientIP: client.ip_address
+        });
       }
     }
   }
@@ -281,8 +344,8 @@ class SocketService {
     
     logger.info(`소켓 연결 해제: ${clientName} (${clientType})`);
     
-    if (socket.clientName) {
-      // 연결 해제 처리
+    if (socket.clientName && !this.gracefulShutdown) {
+      // 정상 종료가 아닌 경우에만 재연결 대기 처리
       this.handleClientDisconnect(socket.clientName);
     }
   }
@@ -292,22 +355,43 @@ class SocketService {
     if (currentSocket) {
       this.connectedClients.delete(clientName);
       
-      // 타임아웃 설정 (재연결 대기)
-      const timeout = setTimeout(async () => {
-        const checkSocket = this.connectedClients.get(clientName);
-        if (!checkSocket || !checkSocket.connected) {
-          const client = await ClientModel.findByName(clientName);
-          if (client) {
-            await ClientModel.updateStatus(client.id, 'offline');
-            this.emit('client_status_changed', { 
-              name: clientName, 
-              status: 'offline' 
-            });
+      // 재연결 타이머 설정 (더 관대하게) - 문서 2.3 정확히 따름
+      const reconnectTimer = setTimeout(async () => {
+        try {
+          // 재연결되었는지 다시 확인
+          const checkSocket = this.connectedClients.get(clientName);
+          if (!checkSocket || !checkSocket.connected) {
+            
+            // 하트비트 기록 확인
+            const heartbeatRecord = this.clientHeartbeats.get(clientName);
+            if (heartbeatRecord) {
+              const timeSinceLastHeartbeat = Date.now() - heartbeatRecord.lastHeartbeat.getTime();
+              
+              // 하트비트 여유시간 내라면 기다리기
+              if (timeSinceLastHeartbeat < config.monitoring.heartbeatGracePeriod) {
+                logger.info(`클라이언트 ${clientName}: 하트비트 여유시간 내 - 오프라인 처리 연기`);
+                return;
+              }
+            }
+            
+            // 정말 오프라인 처리
+            const client = await ClientModel.findByName(clientName);
+            if (client) {
+              await ClientModel.updateStatus(client.id, 'offline');
+              this.emit('client_status_changed', { 
+                name: clientName, 
+                status: 'offline',
+                reason: '재연결 타임아웃'
+              });
+              logger.info(`클라이언트 오프라인 처리 완료: ${clientName}`);
+            }
           }
+        } catch (error) {
+          logger.error(`클라이언트 ${clientName} 오프라인 처리 중 오류:`, error);
         }
-      }, 5000); // 5초 대기
+      }, config.monitoring.reconnectionGracePeriod); // 2분 대기
       
-      this.clientTimeouts.set(clientName, timeout);
+      this.clientReconnectTimers.set(clientName, reconnectTimer);
     }
   }
 
@@ -339,6 +423,47 @@ class SocketService {
     }
   }
 
+  // 재연결 타이머 관리 메서드들 추가 (문서 2.4 정확히 따름)
+  clearReconnectTimer(clientName) {
+    const timer = this.clientReconnectTimers.get(clientName);
+    if (timer) {
+      clearTimeout(timer);
+      this.clientReconnectTimers.delete(clientName);
+      logger.debug(`재연결 타이머 클리어: ${clientName}`);
+    }
+  }
+
+  // 정상 종료 처리 (문서 2.4 정확히 따름)
+  async gracefulShutdown() {
+    logger.info('Socket 서비스 정상 종료 시작...');
+    this.gracefulShutdown = true;
+    
+    // 모든 클라이언트에게 서버 종료 알림
+    this.emit('server_shutdown', {
+      message: '서버가 종료됩니다. 잠시 후 재연결을 시도해주세요.',
+      timestamp: new Date().toISOString(),
+      reconnectAfter: 5000 // 5초 후 재연결 권장
+    });
+    
+    // 모든 타이머 정리
+    for (const timer of this.clientReconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.clientReconnectTimers.clear();
+    
+    for (const timeout of this.clientTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    this.clientTimeouts.clear();
+    
+    // Socket.IO 서버 정상 종료
+    if (this.io) {
+      this.io.close(() => {
+        logger.info('Socket.IO 서버 종료 완료');
+      });
+    }
+  }
+
   normalizeIP(ip) {
     if (ip.startsWith('::ffff:')) {
       return ip.substring(7);
@@ -349,9 +474,14 @@ class SocketService {
     return ip;
   }
 
-  // 외부 호출용 메서드
+  // 외부 호출용 메서드 (문서 6번 정확히 따름)
   emit(event, data) {
     if (this.io) {
+      // 클라이언트 상태 변화는 상세히 로깅
+      if (event === 'client_status_changed') {
+        logger.info(`[STATUS] ${data.name}: ${data.status} (이유: ${data.reason || '없음'})`);
+      }
+      
       this.io.emit(event, data);
     }
   }
@@ -374,7 +504,7 @@ class SocketService {
     return socket && socket.connected;
   }
 
-  // 주기적인 상태 확인
+  // 주기적인 상태 확인 (문서 2.5 정확히 따름)
   startHealthCheck() {
     setInterval(async () => {
       try {
@@ -382,48 +512,64 @@ class SocketService {
         logger.debug(`온라인 클라이언트 수: ${onlineClients.length}`);
         
         for (const client of onlineClients) {
-          logger.debug(`클라이언트 정보: ID=${client.id}, name='${client.name}', status='${client.status}'`);
-          
           if (!client.name) {
             logger.warn(`클라이언트 이름이 없음: ID=${client.id}`);
             continue;
           }
           
           const socket = this.connectedClients.get(client.name);
+          const heartbeatRecord = this.clientHeartbeats.get(client.name);
+          
           if (socket && socket.connected) {
+            // 연결된 클라이언트에게 연결 확인
             logger.debug(`연결 확인 전송: ${client.name}`);
             socket.emit('connection_check', {
-              client_name: client.name,
-              timestamp: new Date().toISOString()
+              clientName: client.name,  // client_name → clientName으로 변경
+              timestamp: new Date().toISOString(),
+              expect_response_within: 30000 // 30초 내 응답 기대
             });
+            
+          } else if (heartbeatRecord) {
+            // 소켓은 없지만 최근 하트비트가 있는 경우
+            const timeSinceLastHeartbeat = Date.now() - heartbeatRecord.lastHeartbeat.getTime();
+            
+            if (timeSinceLastHeartbeat > config.monitoring.offlineTimeout) {
+              // 정말 오래된 경우에만 오프라인 처리
+              logger.info(`클라이언트 오프라인 처리: ${client.name} (마지막 하트비트: ${Math.round(timeSinceLastHeartbeat/1000)}초 전)`);
+              await ClientModel.updateStatus(client.id, 'offline');
+              this.emit('client_status_changed', { 
+                name: client.name, 
+                status: 'offline',
+                reason: '하트비트 타임아웃'
+              });
+              this.clientHeartbeats.delete(client.name);
+            }
+            
           } else {
-            // 소켓이 없으면 오프라인 처리
-            logger.info(`클라이언트 오프라인 처리: ${client.name} (소켓 없음)`);
+            // 소켓도 없고 하트비트 기록도 없는 경우
+            logger.info(`클라이언트 오프라인 처리: ${client.name} (연결 기록 없음)`);
             await ClientModel.updateStatus(client.id, 'offline');
             this.emit('client_status_changed', { 
               name: client.name, 
-              status: 'offline' 
+              status: 'offline',
+              reason: '연결 없음'
             });
           }
         }
       } catch (error) {
-        logger.error('연결 확인 중 오류:', error);
+        logger.error('헬스 체크 중 오류:', error);
       }
     }, config.monitoring.connectionCheckInterval);
   }
 
-  // 오프라인 처리 (하트비트 기반)
+  // 오프라인 처리
   startOfflineCheck() {
     setInterval(async () => {
-      try {
-        const offlineCount = await ClientModel.markOfflineByTimeout(config.monitoring.offlineTimeout);
-        
-        if (offlineCount > 0) {
-          logger.info(`${offlineCount}개 클라이언트를 오프라인으로 변경 (하트비트 타임아웃)`);
-          this.emit('clients_offline_updated');
-        }
-      } catch (error) {
-        logger.error('오프라인 체크 중 오류:', error);
+      const offlineCount = await ClientModel.markOfflineByTimeout(config.monitoring.offlineTimeout);
+      
+      if (offlineCount > 0) {
+        logger.info(`${offlineCount}개 클라이언트를 오프라인으로 변경`);
+        this.emit('clients_offline_updated');
       }
     }, config.monitoring.offlineTimeout);
   }

@@ -13,15 +13,20 @@ module.exports = {
     credentials: true
   },
   
-  // Socket.IO 설정
+  // Socket.IO 설정 - 문서 정확히 따름
   socket: {
     cors: {
       origin: '*',
       methods: ['GET', 'POST']
     },
-    pingInterval: 25000,
-    pingTimeout: 60000,
-    transports: ['websocket', 'polling']
+    pingInterval: 30000,  // 30초 (기존: 25초)
+    pingTimeout: 120000,  // 2분 (기존: 60초) - 더 관대하게
+    transports: ['websocket', 'polling'],
+    
+    // 새로 추가
+    allowEIO3: true,      // 호환성 향상
+    maxHttpBufferSize: 1e6, // 1MB
+    connectTimeout: 60000   // 1분 연결 타임아웃
   },
   
   // 데이터베이스 설정
@@ -31,12 +36,17 @@ module.exports = {
     verbose: process.env.NODE_ENV === 'development'
   },
   
-  // 모니터링 설정
+  // 모니터링 설정 - 문서 정확히 따름
   monitoring: {
-    healthCheckInterval: 15000,    // 15초
-    offlineTimeout: 120000,        // 120초 (2분)
-    connectionCheckInterval: 15000, // 15초
-    processCheckInterval: 10000    // 10초
+    healthCheckInterval: 30000,    // 30초 (기존: 15초)
+    offlineTimeout: 300000,        // 5분 (기존: 2분) - 너무 짧았음
+    connectionCheckInterval: 30000, // 30초 (기존: 15초)
+    processCheckInterval: 20000,    // 20초 (기존: 10초)
+    
+    // 새로 추가할 설정들
+    maxMissedHeartbeats: 3,        // 3번 놓치면 오프라인
+    heartbeatGracePeriod: 60000,   // 1분 여유시간
+    reconnectionGracePeriod: 120000 // 2분 재연결 대기
   },
   
   // 로깅 설정

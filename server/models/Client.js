@@ -179,15 +179,21 @@ class ClientModel {
     );
   }
 
-  // 오프라인 처리
-  static async markOfflineByTimeout(timeoutMs = 60000) {
+  // 오프라인 처리 (문서 4번 정확히 따름)
+  static async markOfflineByTimeout(timeoutMs = 300000) {  // 5분으로 증가
     const cutoffTime = new Date(Date.now() - timeoutMs).toISOString();
     
+    // 더 엄격한 조건으로 변경 - 정말 오래된 것만 오프라인 처리
     const result = await db.run(
-      'UPDATE clients SET status = "offline" WHERE status = "online" AND last_seen < ?',
+      `UPDATE clients 
+       SET status = "offline" 
+       WHERE status = "online" 
+       AND last_seen < ? 
+       AND last_seen IS NOT NULL`,  // NULL 체크 추가
       [cutoffTime]
     );
     
+    logger.info(`하트비트 타임아웃으로 ${result.changes}개 클라이언트 오프라인 처리`);
     return result.changes;
   }
 }

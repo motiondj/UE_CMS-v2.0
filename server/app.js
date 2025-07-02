@@ -76,11 +76,17 @@ async function startServer() {
   }
 }
 
-// Graceful shutdown
+// Graceful shutdown (문서 3번 정확히 따름)
 process.on('SIGINT', async () => {
   logger.info('서버 종료 시작...');
   
   try {
+    // Socket 서비스에게 정상 종료 알림
+    await socketService.gracefulShutdown();
+    
+    // 잠시 대기 (클라이언트들이 알림을 받을 시간)
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
     // 서버 종료
     server.close();
     

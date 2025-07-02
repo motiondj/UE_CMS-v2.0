@@ -37,22 +37,54 @@ class UECMSClient:
         self.server_url = server_url
         self.client_name = client_name or self.get_computer_name()
         self.client_id = None
-        self.sio = socketio.Client()
+        # Socket.IO 클라이언트 설정 (문서 2.1 정확히 따름)
+        self.sio = socketio.Client(
+            reconnection=True,
+            reconnection_attempts=0,  # 무한 재시도
+            reconnection_delay=1,     # 1초 시작
+            reconnection_delay_max=30, # 최대 30초
+            randomization_factor=0.5,
+            logger=False,
+            engineio_logger=False
+        )
+        # 상태 관리 (문서 2.1 정확히 따름)
         self.running = False
-        self.registration_completed = False  # 등록 완료 상태 추적
+        self.is_registered = False  # 등록 완료 상태 추적 (이름 변경)
+        self.should_run = True
+        self.start_time = time.time()
         self.running_processes = {}  # 실행 중인 프로세스 추적
         
-        # Socket.io 이벤트 핸들러 등록
-        self.sio.on('connect', self.on_connect)
-        self.sio.on('disconnect', self.on_disconnect)
-        self.sio.on('registration_success', self.on_registration_success)
-        self.sio.on('registration_failed', self.on_registration_failed)
-        self.sio.on('execute_command', self.on_execute_command)
-        self.sio.on('connection_check', self.on_connection_check)
-        self.sio.on('stop_command', self.on_stop_command)
-        self.sio.on('power_action', self.on_power_action)
+        # Socket.io 이벤트 핸들러 등록 (문서 2.1 정확히 따름)
+        self.setup_events()
         
         logging.info(f"클라이언트 초기화 완료: {self.client_name}")
+    
+    def setup_events(self):
+        """Socket.IO 이벤트 핸들러 설정 (문서 2.1 정확히 따름)"""
+        
+        # 연결 성공
+        self.sio.on('connect', self.on_connect)
+        
+        # 연결 해제
+        self.sio.on('disconnect', self.on_disconnect)
+        
+        # 등록 성공 응답
+        self.sio.on('registration_success', self.on_registration_success)
+        
+        # 등록 실패 응답
+        self.sio.on('registration_failed', self.on_registration_failed)
+        
+        # 하트비트 응답 (새로 추가)
+        self.sio.on('heartbeat_response', self.on_heartbeat_response)
+        
+        # 서버 종료 알림 (새로 추가)
+        self.sio.on('server_shutdown', self.on_server_shutdown)
+        
+        # 명령 관련
+        self.sio.on('execute_command', self.on_execute_command)
+        self.sio.on('stop_command', self.on_stop_command)
+        self.sio.on('connection_check', self.on_connection_check)
+        self.sio.on('power_action', self.on_power_action)
     
     def get_computer_name(self):
         """컴퓨터의 실제 호스트명을 가져옵니다."""
@@ -141,18 +173,15 @@ class UECMSClient:
             return False
     
     def connect_socket(self):
-        """Socket.io 연결을 설정합니다."""
+        """Socket.io 연결을 설정합니다. (문서 2.1 정확히 따름)"""
         try:
             # HTTP URL을 Socket.IO URL로 변환
             socket_url = self.server_url.replace('http://', '').replace('https://', '')
             print(f"🔌 소켓 연결 시도: {socket_url}")
             logging.info(f"소켓 연결 시도: {socket_url}")
             
-            # Socket.IO 연결 설정
-            self.sio.connect(f"http://{socket_url}", {
-                'transports': ['websocket', 'polling'],
-                'timeout': 20000
-            })
+            # Socket.IO 연결 설정 (문서대로 단순화)
+            self.sio.connect(f"http://{socket_url}")
             self.running = True
             print(f"✅ Socket.io 연결 성공: {self.client_name}")
             logging.info(f"Socket.io 연결 성공: {self.client_name}")
@@ -187,9 +216,34 @@ class UECMSClient:
             logging.info(f"등록 데이터 준비: {registration_data}")
             
             # 등록 요청 전송
+            self.register_client(registration_data)
+            
+        except Exception as e:
+            print(f"❌ on_connect 처리 중 오류: {e}")
+            logging.error(f"on_connect 처리 중 오류: {e}")
+    
+    def register_client(self, registration_data=None):
+        """서버에 클라이언트 등록 (문서 2.2 정확히 따름)"""
+        try:
+            if registration_data is None:
+                registration_data = {
+                    'name': self.client_name,
+                    'clientType': 'python',
+                    'ip_address': self.get_local_ip(),
+                    'version': '2.0',
+                    'capabilities': ['unreal_engine', 'file_transfer'],
+                    'timestamp': time.time()
+                }
+            
+            print(f"📝 클라이언트 등록 요청: {registration_data}")
+            logging.info(f"클라이언트 등록 요청: {registration_data}")
             self.sio.emit('register_client', registration_data)
-            print(f"📤 클라이언트 등록 요청 전송 완료: {self.client_name}")
-            logging.info(f"클라이언트 등록 요청 전송 완료: {self.client_name}")
+            
+        except Exception as e:
+            print(f"❌ 등록 요청 실패: {e}")
+            logging.error(f"등록 요청 실패: {e}")
+            # 5초 후 재시도
+            threading.Timer(5.0, self.register_client).start()
             
             # 하트비트 시작
             self.start_heartbeat()
@@ -225,7 +279,10 @@ class UECMSClient:
                     heartbeat_data = {
                         'clientName': self.client_name,
                         'ip_address': ip,
-                        'timestamp': datetime.now().isoformat()
+                        'timestamp': time.time(),
+                        'status': 'online',
+                        'uptime': time.time() - self.start_time,
+                        'process_count': len(self.running_processes)
                     }
                     print(f"[하트비트] 데이터: {heartbeat_data}")
                     
@@ -237,7 +294,7 @@ class UECMSClient:
                         print(f"[하트비트] 소켓 연결 끊어짐, 전송 건너뜀")
                         logging.warning(f"[하트비트] 소켓 연결 끊어짐, 전송 건너뜀")
                     
-                    time.sleep(5)  # 5초마다 하트비트 전송
+                    time.sleep(30)  # 30초마다 하트비트 전송 (문서 3.1 정확히 따름)
                 except Exception as e:
                     print(f"[하트비트] 전송 오류: {e}")
                     logging.error(f"[하트비트] 전송 오류: {e}")
@@ -247,36 +304,99 @@ class UECMSClient:
         heartbeat_thread.start()
     
     def on_disconnect(self):
+        """서버와 연결이 끊어짐 (문서 2.1 정확히 따름)"""
         try:
-            print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
-            logging.info(f"서버와의 연결이 해제되었습니다: {self.client_name}")
-            self.running = False
+            print("❌ 서버와 연결이 끊어짐")
+            logging.info("서버와 연결이 끊어짐")
+            self.is_registered = False
+            # 재연결은 Socket.IO 설정으로 자동 처리됨
         except Exception as e:
             print(f"❌ on_disconnect 처리 중 오류: {e}")
             logging.error(f"on_disconnect 처리 중 오류: {e}")
     
     def on_registration_success(self, data):
-        """서버에서 등록 성공 알림을 받았을 때 호출됩니다."""
+        """서버에서 등록 성공 알림을 받았을 때 호출됩니다. (문서 2.1 정확히 따름)"""
         try:
             print(f"✅ 서버 등록 성공: {data}")
             logging.info(f"서버 등록 성공: {data}")
-            self.registration_completed = True
+            self.is_registered = True
         except Exception as e:
             print(f"❌ 서버 등록 성공 처리 중 오류: {e}")
             logging.error(f"서버 등록 성공 처리 중 오류: {e}")
     
     def on_registration_failed(self, data):
-        """서버에서 등록 실패 알림을 받았을 때 호출됩니다."""
+        """서버에서 등록 실패 알림을 받았을 때 호출됩니다. (문서 2.1 정확히 따름)"""
         try:
             error_message = data.get('message', '등록 실패')
             print(f"❌ 서버 등록 실패: {error_message}")
             logging.error(f"서버 등록 실패: {error_message}")
-            self.registration_completed = False
-            self.running = False
-            self.stop()
+            self.is_registered = False
+            # 5초 후 재등록 시도
+            threading.Timer(5.0, self.register_client).start()
         except Exception as e:
             print(f"❌ 서버 등록 실패 처리 중 오류: {e}")
             logging.error(f"서버 등록 실패 처리 중 오류: {e}")
+    
+    def on_heartbeat_response(self, data):
+        """하트비트 응답 처리 (문서 3.2 정확히 따름)"""
+        try:
+            if data['status'] == 'ok':
+                print(f"💓 하트비트 응답 수신: {data['message']}")
+                logging.info(f"하트비트 응답 수신: {data['message']}")
+            else:
+                print(f"⚠️ 하트비트 오류: {data['message']}")
+                logging.warning(f"하트비트 오류: {data['message']}")
+                if data.get('shouldReconnect'):
+                    self.reconnect()
+        except Exception as e:
+            print(f"❌ 하트비트 응답 처리 중 오류: {e}")
+            logging.error(f"하트비트 응답 처리 중 오류: {e}")
+    
+    def on_server_shutdown(self, data):
+        """서버 종료 알림 처리 (문서 4.1 정확히 따름)"""
+        try:
+            print(f"🚨 서버 종료 알림: {data['message']}")
+            logging.info(f"서버 종료 알림: {data['message']}")
+            
+            reconnect_after = data.get('reconnectAfter', 5000)
+            print(f"⏰ {reconnect_after/1000}초 후 재연결 시도 예정")
+            logging.info(f"{reconnect_after/1000}초 후 재연결 시도 예정")
+            
+            # 지정된 시간 후 재연결 시도
+            threading.Timer(
+                reconnect_after/1000, 
+                self.reconnect
+            ).start()
+        except Exception as e:
+            print(f"❌ 서버 종료 알림 처리 중 오류: {e}")
+            logging.error(f"서버 종료 알림 처리 중 오류: {e}")
+    
+    def reconnect(self):
+        """수동 재연결 (문서 4.1 정확히 따름)"""
+        try:
+            if self.sio.connected:
+                self.sio.disconnect()
+            
+            print("🔄 재연결 시도 중...")
+            logging.info("재연결 시도 중...")
+            self.is_registered = False
+            
+            # 재연결
+            if self.connect_socket():
+                print("✅ 재연결 성공")
+                logging.info("재연결 성공")
+                # 재연결 성공 알림
+                self.sio.emit('reconnection_success', {
+                    'clientName': self.client_name,
+                    'timestamp': time.time()
+                })
+            else:
+                print("❌ 재연결 실패")
+                logging.error("재연결 실패")
+                
+        except Exception as e:
+            print(f"❌ 재연결 오류: {e}")
+            logging.error(f"재연결 오류: {e}")
     
     def on_execute_command(self, data):
         """서버로부터 명령 실행 요청을 받습니다."""
@@ -362,16 +482,22 @@ class UECMSClient:
             })
     
     def on_connection_check(self, data):
-        """서버의 연결 확인 요청에 응답합니다."""
+        """서버의 연결 확인 요청에 응답합니다. (문서 정확히 따름)"""
         try:
             client_name = data.get('clientName')
             print(f"🔍 연결 확인 요청 수신: {client_name} (내 이름: {self.client_name})")
             logging.info(f"연결 확인 요청 수신: {client_name} (내 이름: {self.client_name})")
             
             if client_name == self.client_name:
-                self.sio.emit('connection_check_response', {
-                    'clientName': self.client_name
-                })
+                # 즉시 응답 (문서 3.2 정확히 따름)
+                response_data = {
+                    'clientName': self.client_name,
+                    'timestamp': time.time(),
+                    'status': 'alive',
+                    'received_at': data.get('timestamp')
+                }
+                
+                self.sio.emit('connection_check_response', response_data)
                 print(f"✅ 연결 확인 응답 전송: {self.client_name}")
                 logging.info(f"연결 확인 응답 전송: {self.client_name}")
             else:
