@@ -45,6 +45,7 @@ class UECMSClient:
         # Socket.io 이벤트 핸들러 등록
         self.sio.on('connect', self.on_connect)
         self.sio.on('disconnect', self.on_disconnect)
+        self.sio.on('registration_success', self.on_registration_success)
         self.sio.on('registration_failed', self.on_registration_failed)
         self.sio.on('execute_command', self.on_execute_command)
         self.sio.on('connection_check', self.on_connection_check)
@@ -80,6 +81,12 @@ class UECMSClient:
     
     def check_duplicate_process(self):
         """같은 이름의 클라이언트가 이미 실행 중인지 확인합니다."""
+        # 일시적으로 중복 검사 비활성화
+        print("⚠️ 중복 프로세스 검사 비활성화됨")
+        return True
+        
+        # 기존 검사 로직 (주석 처리)
+        """
         try:
             current_pid = os.getpid()
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -92,9 +99,11 @@ class UECMSClient:
                     if proc.info['name'] and 'python' in proc.info['name'].lower():
                         cmdline = proc.info['cmdline']
                         if cmdline and len(cmdline) > 1:
-                            # client.py가 실행 중인지 확인
-                            if 'client.py' in cmdline[1] or 'start_client.bat' in ' '.join(cmdline):
+                            # client.py가 실행 중인지 확인 (정확한 파일명만 검사)
+                            cmdline_str = ' '.join(cmdline)
+                            if 'client.py' in cmdline_str and 'UECMSClient' in cmdline_str:
                                 print(f"⚠️ 다른 클라이언트 프로세스 발견: PID {proc.info['pid']}")
+                                print(f"   명령줄: {cmdline_str}")
                                 return False
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
@@ -102,6 +111,7 @@ class UECMSClient:
         except Exception as e:
             print(f"⚠️ 프로세스 확인 중 오류: {e}")
             return True  # 오류 시 실행 허용
+        """
     
     def register_with_server(self):
         """서버에 클라이언트를 등록합니다."""
@@ -133,9 +143,16 @@ class UECMSClient:
     def connect_socket(self):
         """Socket.io 연결을 설정합니다."""
         try:
-            print(f"🔌 소켓 연결 시도: {self.server_url}")
-            logging.info(f"소켓 연결 시도: {self.server_url}")
-            self.sio.connect(self.server_url)
+            # HTTP URL을 Socket.IO URL로 변환
+            socket_url = self.server_url.replace('http://', '').replace('https://', '')
+            print(f"🔌 소켓 연결 시도: {socket_url}")
+            logging.info(f"소켓 연결 시도: {socket_url}")
+            
+            # Socket.IO 연결 설정
+            self.sio.connect(f"http://{socket_url}", {
+                'transports': ['websocket', 'polling'],
+                'timeout': 20000
+            })
             self.running = True
             print(f"✅ Socket.io 연결 성공: {self.client_name}")
             logging.info(f"Socket.io 연결 성공: {self.client_name}")
@@ -146,22 +163,60 @@ class UECMSClient:
             return False
     
     def on_connect(self):
-        print(f"🔌 서버에 연결되었습니다: {self.client_name}")
-        logging.info(f"서버에 연결되었습니다: {self.client_name}")
-        self.sio.emit('register_client', {
-            'name': self.client_name,
-            'ip_address': self.get_local_ip(),
-            'clientType': 'python'
-        })
-        print(f"📝 클라이언트 등록 요청 전송: {self.client_name} (IP: {self.get_local_ip()})")
-        logging.info(f"클라이언트 등록 요청 전송: {self.client_name} (IP: {self.get_local_ip()})")
-        self.start_heartbeat()
+        try:
+            print(f"🔌 서버에 연결되었습니다: {self.client_name}")
+            logging.info(f"서버에 연결되었습니다: {self.client_name}")
+            
+            # IP 주소 가져오기
+            try:
+                ip_address = self.get_local_ip()
+                print(f"📡 IP 주소 획득: {ip_address}")
+                logging.info(f"IP 주소 획득: {ip_address}")
+            except Exception as e:
+                print(f"❌ IP 주소 획득 실패: {e}")
+                logging.error(f"IP 주소 획득 실패: {e}")
+                ip_address = "127.0.0.1"  # 기본값 사용
+            
+            # 등록 데이터 준비
+            registration_data = {
+                'name': self.client_name,
+                'ip_address': ip_address,
+                'clientType': 'python'
+            }
+            print(f"📝 등록 데이터 준비: {registration_data}")
+            logging.info(f"등록 데이터 준비: {registration_data}")
+            
+            # 등록 요청 전송
+            self.sio.emit('register_client', registration_data)
+            print(f"📤 클라이언트 등록 요청 전송 완료: {self.client_name}")
+            logging.info(f"클라이언트 등록 요청 전송 완료: {self.client_name}")
+            
+            # 하트비트 시작
+            self.start_heartbeat()
+            
+        except Exception as e:
+            print(f"❌ on_connect 처리 중 오류: {e}")
+            logging.error(f"on_connect 처리 중 오류: {e}")
     
     def start_heartbeat(self):
         def heartbeat_loop():
             print(f"[하트비트] 루프 시작: {self.client_name}")
             while self.running:
                 try:
+                    # 소켓 연결 상태 확인
+                    if not self.sio.connected:
+                        print(f"[하트비트] 소켓 연결되지 않음, 재연결 시도...")
+                        logging.warning(f"[하트비트] 소켓 연결되지 않음, 재연결 시도...")
+                        try:
+                            self.connect_socket()
+                            time.sleep(2)  # 재연결 후 잠시 대기
+                            continue
+                        except Exception as e:
+                            print(f"[하트비트] 재연결 실패: {e}")
+                            logging.error(f"[하트비트] 재연결 실패: {e}")
+                            time.sleep(5)  # 재연결 실패 시 더 오래 대기
+                            continue
+                    
                     ip = self.get_local_ip()
                     current_time = datetime.now().strftime("%H:%M:%S")
                     print(f"[하트비트] 전송 시작: 이름={self.client_name}, IP={ip}, 시간={current_time}")
@@ -174,8 +229,13 @@ class UECMSClient:
                     }
                     print(f"[하트비트] 데이터: {heartbeat_data}")
                     
-                    self.sio.emit('heartbeat', heartbeat_data)
-                    print(f"[하트비트] 전송 완료: {self.client_name}")
+                    # 소켓 연결 상태 재확인 후 전송
+                    if self.sio.connected:
+                        self.sio.emit('heartbeat', heartbeat_data)
+                        print(f"[하트비트] 전송 완료: {self.client_name}")
+                    else:
+                        print(f"[하트비트] 소켓 연결 끊어짐, 전송 건너뜀")
+                        logging.warning(f"[하트비트] 소켓 연결 끊어짐, 전송 건너뜀")
                     
                     time.sleep(5)  # 5초마다 하트비트 전송
                 except Exception as e:
@@ -187,8 +247,23 @@ class UECMSClient:
         heartbeat_thread.start()
     
     def on_disconnect(self):
-        print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
-        logging.info(f"서버와의 연결이 해제되었습니다: {self.client_name}")
+        try:
+            print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
+            logging.info(f"서버와의 연결이 해제되었습니다: {self.client_name}")
+            self.running = False
+        except Exception as e:
+            print(f"❌ on_disconnect 처리 중 오류: {e}")
+            logging.error(f"on_disconnect 처리 중 오류: {e}")
+    
+    def on_registration_success(self, data):
+        """서버에서 등록 성공 알림을 받았을 때 호출됩니다."""
+        try:
+            print(f"✅ 서버 등록 성공: {data}")
+            logging.info(f"서버 등록 성공: {data}")
+            self.registration_completed = True
+        except Exception as e:
+            print(f"❌ 서버 등록 성공 처리 중 오류: {e}")
+            logging.error(f"서버 등록 성공 처리 중 오류: {e}")
     
     def on_registration_failed(self, data):
         """서버에서 등록 실패 알림을 받았을 때 호출됩니다."""
@@ -645,6 +720,17 @@ class UECMSClient:
             # Socket.io 연결
             if self.connect_socket():
                 print("✅ Socket.io 연결 성공")
+                
+                # 연결 완료 대기 (최대 10초)
+                wait_time = 0
+                while not self.sio.connected and wait_time < 10:
+                    time.sleep(0.5)
+                    wait_time += 0.5
+                
+                if self.sio.connected:
+                    print("✅ Socket.IO 연결 확인됨")
+                else:
+                    print("⚠️ Socket.IO 연결 확인 실패")
             else:
                 print("⚠️ Socket.io 연결 실패")
             

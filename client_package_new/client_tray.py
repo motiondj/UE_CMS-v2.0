@@ -482,37 +482,18 @@ try:
             print(f"🔌 서버와의 연결이 해제되었습니다: {self.client_name}")
             logging.info("서버와의 연결이 해제되었습니다")
             
-            # 연결 해제 시에도 클라이언트는 계속 실행 (독립성 확보)
-            # self.running = False  # 클라이언트 종료 방지
+            # 연결 상태 업데이트
+            self.running = False
             
             # 트레이 아이콘 색상 업데이트 (빨간색으로 변경)
             self.update_tray_icon()
             
-            # 자동 재연결 시도
-            print(f"🔄 서버 재연결 시도 중: {self.client_name}")
-            logging.info(f"서버 재연결 시도 중: {self.client_name}")
-            
-            # 5초 후 재연결 시도
-            def reconnect_after_delay():
-                time.sleep(5)
-                if not self.sio.connected:
-                    print(f"🔄 재연결 시도: {self.client_name}")
-                    logging.info(f"재연결 시도: {self.client_name}")
-                    self.connect_socket()
-            
-            import threading
-            reconnect_thread = threading.Thread(target=reconnect_after_delay, daemon=True)
-            reconnect_thread.start()
+            # 재연결 시도 (선택적)
+            # self.reconnect_to_server()
         
         def start_heartbeat(self):
             """하트비트 전송을 시작합니다."""
-            print(f"💓 하트비트 시작: {self.client_name}")
-            logging.info(f"하트비트 시작: {self.client_name}")
-            
             def heartbeat_loop():
-                print(f"💓 하트비트 루프 시작: {self.client_name}")
-                logging.info(f"하트비트 루프 시작: {self.client_name}")
-                
                 while self.running:
                     try:
                         # 연결 상태 확인
@@ -522,23 +503,20 @@ try:
                             time.sleep(5)
                             continue
                         
-                        # 하트비트 전송 (서버 오류 수정 후 복원)
-                        heartbeat_data = {
+                        # 하트비트 전송
+                        self.sio.emit('heartbeat', {
                             'clientName': self.client_name,
-                            'ip_address': self.get_cached_ip(),
                             'timestamp': datetime.now().isoformat()
-                        }
-                        self.sio.emit('heartbeat', heartbeat_data)
-                        print(f"💓 하트비트 전송: {self.client_name}")
-                        logging.info(f"하트비트 전송: {self.client_name}")
+                        })
                         time.sleep(5)  # 5초마다 하트비트
                     except Exception as e:
                         logging.error(f"하트비트 전송 오류: {e}")
-                        # 연결 오류 시에도 클라이언트는 계속 실행
+                        # 연결 오류 시 재연결 시도
                         if "not a connected namespace" in str(e):
-                            print(f"⚠️ 하트비트 전송 실패 - 연결 상태 확인 후 재시도")
-                            logging.warning("하트비트 전송 실패 - 연결 상태 확인 후 재시도")
-                        time.sleep(5)  # 오류 시 5초 후 재시도
+                            print(f"🔄 연결이 끊어짐 - 재연결 시도")
+                            self.running = False
+                            break
+                        time.sleep(1)  # 오류 시 1초 후 재시도
             
             import threading
             heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
@@ -555,8 +533,7 @@ try:
             try:
                 command = data.get('command', '')
                 preset_id = data.get('preset_id')
-                # 두 가지 필드명 모두 처리
-                client_name = data.get('client_name', '') or data.get('clientName', '')
+                client_name = data.get('client_name', '')
                 
                 if client_name != self.client_name:
                     return  # 다른 클라이언트용 명령이면 무시
@@ -600,16 +577,18 @@ try:
         def on_connection_check(self, data):
             """연결 확인 요청을 받았을 때 호출됩니다."""
             try:
-                # 두 가지 필드명 모두 처리 (서버에서 일관성 없이 보내는 경우 대비)
-                client_name = data.get('client_name', '') or data.get('clientName', '')
+                client_name = data.get('client_name', '')
                 timestamp = data.get('timestamp', '')
                 
-                logging.info(f"연결 확인 요청 수신: {self.client_name}")
+                print(f"🔍 [연결 확인] 요청 수신: {self.client_name} (시간: {timestamp})")
+                print(f"🔍 [연결 확인] 소켓 연결 상태: {self.sio.connected}")
+                print(f"🔍 [연결 확인] 요청된 클라이언트: '{client_name}' vs 현재: '{self.client_name}'")
+                print(f"🔍 [연결 확인] 전체 데이터: {data}")
+                logging.info(f"연결 확인 요청 수신: {self.client_name} (소켓 연결: {self.sio.connected})")
                 
                 # 빈 문자열이거나 현재 클라이언트 이름과 다른 경우 처리
-                if not client_name:
-                    client_name = self.client_name  # 빈 문자열이면 현재 클라이언트로 처리
-                elif client_name != self.client_name:
+                if not client_name or client_name != self.client_name:
+                    print(f"⚠️ [연결 확인] 다른 클라이언트용 요청 - 무시: '{client_name}' != '{self.client_name}'")
                     return  # 다른 클라이언트용 요청이면 무시
                 
                 # 연결 확인 응답
@@ -620,9 +599,13 @@ try:
                         'timestamp': datetime.now().isoformat()
                     }
                     
+                    print(f"📤 [연결 확인] 응답 전송 시도: {self.client_name}")
                     self.sio.emit('connection_check_response', response_data)
-                    logging.info(f"연결 확인 응답 전송: {self.client_name}")
+                    
+                    print(f"✅ [연결 확인] 응답 전송 완료: {self.client_name}")
+                    logging.info(f"연결 확인 응답 전송 완료: {self.client_name}")
                 else:
+                    print(f"⚠️ [연결 확인] 소켓이 연결되지 않음 - 응답 건너뜀: {self.client_name}")
                     logging.warning(f"소켓이 연결되지 않음 - 연결 확인 응답 건너뜀: {self.client_name}")
                 
             except Exception as e:
@@ -634,8 +617,7 @@ try:
         def on_stop_command(self, data):
             """정지 명령을 받았을 때 호출됩니다."""
             try:
-                # 두 가지 필드명 모두 처리
-                client_name = data.get('client_name', '') or data.get('clientName', '')
+                client_name = data.get('client_name', '')
                 
                 if client_name != self.client_name:
                     return  # 다른 클라이언트용 명령이면 무시
@@ -873,7 +855,7 @@ try:
             try:
                 timestamp = data.get('timestamp', '')
                 print(f"🏓 [pong] 서버 응답 수신: {timestamp}")
-                logging.info(f"pong 응답 수신: {timestamp}")
+                logging.debug(f"pong 응답 수신: {timestamp}")
             except Exception as e:
                 logging.error(f"pong 응답 처리 중 오류: {e}")
         
