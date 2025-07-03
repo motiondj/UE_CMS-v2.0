@@ -12,7 +12,7 @@ const logger = require('./utils/logger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
 // 서비스
-const SocketService = require('./services/socketService');
+const socketService = require('./services/socketService');
 const heartbeatService = require('./services/heartbeatService');
 
 // 라우트
@@ -62,7 +62,6 @@ async function startServer() {
     await runMigrations();
     
     // Socket.IO 초기화
-    const socketService = new SocketService();
     socketService.initialize(server);
     
     // 하트비트 서비스 시작

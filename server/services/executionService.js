@@ -2,6 +2,7 @@ const PresetModel = require('../models/Preset');
 const ClientModel = require('../models/Client');
 const socketService = require('./socketService');
 const logger = require('../utils/logger');
+const db = require('../config/database');
 
 class ExecutionService {
   // 프리셋 실행
@@ -35,18 +36,25 @@ class ExecutionService {
         continue;
       }
       
+      console.log(`[DEBUG] 클라이언트 ${client.name}에 명령 전송 시도: ${command.substring(0, 50)}...`);
+      
       const sent = socketService.emitToClient(client.name, 'execute_command', {
         clientName: client.name,
         command: command,
         presetId: preset.id
       });
       
+      console.log(`[DEBUG] 명령 전송 결과: ${client.name} - ${sent ? '성공' : '실패'}`);
+      
       if (sent) {
         // 상태 업데이트
-        await ClientModel.update(client.id, { 
-          status: 'running',
-          current_preset_id: preset.id
-        });
+        await ClientModel.updateStatus(client.id, 'running');
+        
+        // current_preset_id 업데이트
+        await db.run(
+          'UPDATE clients SET current_preset_id = ? WHERE id = ?',
+          [preset.id, client.id]
+        );
         
         // 실행 히스토리 기록
         await PresetModel.addExecutionHistory(preset.id, client.id, 'executing');
@@ -107,10 +115,13 @@ class ExecutionService {
       
       if (sent) {
         // 상태 업데이트
-        await ClientModel.update(client.id, { 
-          status: 'online',
-          current_preset_id: null
-        });
+        await ClientModel.updateStatus(client.id, 'online');
+        
+        // current_preset_id 초기화
+        await db.run(
+          'UPDATE clients SET current_preset_id = NULL WHERE id = ?',
+          [client.id]
+        );
         
         stopResults.push({
           clientId: client.id,

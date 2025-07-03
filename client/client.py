@@ -893,36 +893,109 @@ class UECMSClient:
         print(f"✅ 클라이언트 종료 완료: {self.client_name}")
 
 def main():
-    """메인 함수"""
-    parser = argparse.ArgumentParser(description='UE CMS Client')
-    parser.add_argument('--server', default='http://localhost:8000', help='서버 URL')
-    parser.add_argument('--name', help='클라이언트 이름 (지정하지 않으면 컴퓨터 호스트명 사용)')
+    """메인 함수 - 서버 IP 입력 및 클라이언트 실행"""
+    print("🚀 UE CMS Client")
+    print("=" * 50)
     
+    # 명령행 인수 파싱
+    parser = argparse.ArgumentParser(description='UE CMS Client')
+    parser.add_argument('--server', '-s', help='서버 URL (예: http://192.168.1.100:8000)')
+    parser.add_argument('--name', '-n', help='클라이언트 이름')
+    parser.add_argument('--config', '-c', default='config.json', help='설정 파일 경로')
     args = parser.parse_args()
     
-    # 환경 변수에서 서버 URL 가져오기 (우선순위)
-    server_url = os.environ.get('UECMS_SERVER_URL', args.server)
+    # 설정 파일에서 기본값 로드
+    config = load_config(args.config)
+    
+    # 서버 URL 결정 (명령행 인수 > 설정 파일 > 기본값)
+    server_url = args.server or config.get('server_url', 'http://localhost:8000')
+    
+    # 서버 URL이 기본값이면 사용자에게 입력 요청
+    if server_url == 'http://localhost:8000' or server_url == 'http://YOUR_SERVER_IP:8000':
+        print("\n📡 서버 연결 설정")
+        print("-" * 30)
+        
+        # 현재 네트워크 정보 표시
+        try:
+            import psutil
+            print("🌐 현재 네트워크 정보:")
+            for iface, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                        if (addr.address.startswith("192.168.") or 
+                            addr.address.startswith("10.") or 
+                            addr.address.startswith("172.")):
+                            print(f"   📶 {iface}: {addr.address}")
+        except:
+            pass
+        
+        print("\n💡 서버 IP 주소를 입력하세요:")
+        print("   예시: 192.168.1.100")
+        print("   또는 전체 URL: http://192.168.1.100:8000")
+        print("   (Enter만 누르면 localhost:8000 사용)")
+        
+        user_input = input("\n서버 주소: ").strip()
+        
+        if user_input:
+            # IP만 입력한 경우 http:// 추가
+            if not user_input.startswith('http'):
+                if ':' in user_input:
+                    server_url = f"http://{user_input}"
+                else:
+                    server_url = f"http://{user_input}:8000"
+            else:
+                server_url = user_input
+        
+        print(f"✅ 서버 주소 설정: {server_url}")
+    
+    # 클라이언트 이름 결정
+    client_name = args.name or config.get('client_name') or socket.gethostname()
+    
+    print(f"\n📋 클라이언트 정보:")
+    print(f"   서버: {server_url}")
+    print(f"   이름: {client_name}")
+    print(f"   설정 파일: {args.config}")
+    
+    # 설정 저장
+    save_config(args.config, {
+        'server_url': server_url,
+        'client_name': client_name,
+        'saved_at': datetime.now().isoformat()
+    })
+    
+    print("\n🚀 클라이언트 시작 중...")
+    print("=" * 50)
+    
+    # 클라이언트 생성 및 실행
+    client = UECMSClient(server_url=server_url, client_name=client_name)
     
     try:
-        print(f"서버: {server_url}")
-        
-        client = UECMSClient(
-            server_url=server_url,
-            client_name=args.name
-        )
-        
-        print(f"컴퓨터 이름: {client.client_name}")
-        
         client.start()
-        
     except KeyboardInterrupt:
-        print("\n🛑 사용자에 의해 종료됨")
+        print("\n⏹️ 사용자에 의해 중지됨")
     except Exception as e:
-        print(f"❌ 오류 발생: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n❌ 오류 발생: {e}")
+        logging.error(f"클라이언트 실행 중 오류: {e}")
     finally:
-        print("✅ 클라이언트 종료")
+        client.stop()
+
+def load_config(config_file):
+    """설정 파일을 로드합니다."""
+    try:
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ 설정 파일 로드 실패: {e}")
+    return {}
+
+def save_config(config_file, config_data):
+    """설정을 파일에 저장합니다."""
+    try:
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ 설정 파일 저장 실패: {e}")
 
 if __name__ == "__main__":
     main() 

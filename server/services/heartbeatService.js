@@ -49,10 +49,21 @@ class HeartbeatService {
         return;
       }
       
+      const previousStatus = client.status;
       this.clientHeartbeats.set(client.id, new Date());
       
       // DB에 last_seen 업데이트
       await ClientModel.updateStatus(client.id, 'online');
+      
+      // 상태가 변경된 경우에만 이벤트 전송
+      if (previousStatus === 'offline') {
+        socketService.emit('client_status_changed', {
+          client_id: client.id,
+          status: 'online',
+          reason: 'heartbeat_updated'
+        });
+        logger.info(`💓 클라이언트 ${clientName} (ID: ${client.id}) 온라인 상태 유지 알림 전송`);
+      }
       
       logger.debug(`💓 클라이언트 ${clientName} (ID: ${client.id}) 하트비트 수신`);
     } catch (error) {

@@ -239,12 +239,31 @@ function App() {
       showToast('🗑️ 클라이언트가 삭제되었습니다', 'info');
     });
 
-    // 클라이언트 상태 변경 이벤트
+    // 클라이언트 상태 변경 이벤트 (통합)
     socketOn('client_status_changed', (data) => {
-      console.log('📡 클라이언트 상태 변경 이벤트 수신:', data);
+      console.log('📡 클라이언트 상태 변경:', data);
+      
+      // 상태 변경 전후 로깅
+      const prevClient = clients.find(c => c.id === data.client_id || c.name === data.name);
+      console.log(`🔄 상태 변경: ${prevClient?.name || '알 수 없음'} ${prevClient?.status || '알 수 없음'} → ${data.status}`);
+      
       setClients(prev => prev.map(c => 
-        c.name === data.name ? { ...c, status: data.status } : c
+        c.id === data.client_id || c.name === data.name
+          ? { 
+              ...c, 
+              status: data.status,
+              current_preset_id: data.current_preset_id || null
+            } 
+          : c
       ));
+      
+      // 상태 변경 알림
+      const clientName = data.name || prevClient?.name || '알 수 없음';
+      if (data.status === 'online') {
+        showToast(`🟢 ${clientName} 온라인`, 'success');
+      } else if (data.status === 'offline') {
+        showToast(`🔴 ${clientName} 오프라인`, 'warning');
+      }
     });
 
     // 클라이언트 업데이트 이벤트
@@ -379,21 +398,9 @@ function App() {
       }
     });
 
-    // 클라이언트 상태 변경 이벤트 수정
-    socketOn('client_status_changed', (data) => {
-      console.log('📡 클라이언트 상태 변경:', data);
-      setClients(prev => prev.map(c => 
-        c.id === data.client_id 
-          ? { 
-              ...c, 
-              status: data.status,
-              current_preset_id: data.current_preset_id || null
-            } 
-          : c
-      ));
-    });
 
-  }, [socket, socketOn, showToast, loadData]);
+
+  }, [socket, socketOn, showToast, loadData, clients]);
 
   const toggleDarkMode = useCallback(() => {
     const newDarkMode = !isDarkMode;

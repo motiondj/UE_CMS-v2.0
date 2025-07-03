@@ -7,6 +7,7 @@ class SocketService {
     this.io = null;
     this.connectedClients = new Map();
     this.clientTimeouts = new Map();
+    this.clientHeartbeats = new Map(); // 누락된 부분 추가
   }
 
   initialize(server) {
@@ -146,8 +147,8 @@ class SocketService {
       // 상태 업데이트
       await ClientModel.updateStatus(client.id, 'online');
       this.emit('client_status_changed', { 
-        id: client.id, 
-        name: client.name, 
+        client_id: client.id, // client_id로 통일
+        name: client.name,    // name도 함께 전송
         status: 'online' 
       });
       
@@ -424,7 +425,8 @@ class SocketService {
     if (this.io) {
       // 클라이언트 상태 변화는 상세히 로깅
       if (event === 'client_status_changed') {
-        console.log(`[INFO] [STATUS] ${data.name}: ${data.status} (이유: ${data.reason || '없음'})`);
+        const clientName = data.name || data.client_name || '알 수 없음';
+        console.log(`[INFO] [STATUS] ${clientName}: ${data.status} (이유: ${data.reason || '없음'})`);
       }
       
       this.io.emit(event, data);
@@ -432,12 +434,19 @@ class SocketService {
   }
 
   emitToClient(clientName, event, data) {
+    console.log(`[DEBUG] emitToClient 호출: ${clientName}, 이벤트: ${event}`);
+    
     const socket = this.connectedClients.get(clientName);
+    console.log(`[DEBUG] 소켓 찾기 결과: ${clientName} - ${socket ? '찾음' : '없음'}`);
+    
     if (socket && socket.connected) {
+      console.log(`[DEBUG] 명령 전송: ${clientName} (Socket ID: ${socket.id})`);
       socket.emit(event, data);
       return true;
+    } else {
+      console.log(`[DEBUG] 명령 전송 실패: ${clientName} - 소켓 없음 또는 연결 안됨`);
+      return false;
     }
-    return false;
   }
 
   getConnectedClients() {
@@ -617,4 +626,6 @@ class SocketService {
   }
 }
 
-module.exports = SocketService; 
+// 싱글톤 인스턴스 생성 및 export
+const socketService = new SocketService();
+module.exports = socketService; 

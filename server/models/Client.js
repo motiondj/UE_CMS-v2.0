@@ -78,9 +78,9 @@ class ClientModel {
     return await db.get('SELECT * FROM clients WHERE id = ?', [id]);
   }
 
-  // 이름으로 클라이언트 조회
+  // 이름으로 클라이언트 조회 (대소문자 구분 없음)
   static async findByName(name) {
-    return await db.get('SELECT * FROM clients WHERE name = ?', [name]);
+    return await db.get('SELECT * FROM clients WHERE LOWER(name) = LOWER(?)', [name]);
   }
 
   // IP로 클라이언트 조회
@@ -185,7 +185,13 @@ class ClientModel {
       return await this.findById(client.id);
     } else {
       // 새 클라이언트 자동 등록
-      return await this.create({ name, ip_address, port });
+      const newClient = await this.create({ name, ip_address, port });
+      
+      // Socket.IO 이벤트 전송 (새 클라이언트 등록 알림)
+      const socketService = require('../services/socketService');
+      socketService.emit('client_added', newClient);
+      
+      return newClient;
     }
   }
 
