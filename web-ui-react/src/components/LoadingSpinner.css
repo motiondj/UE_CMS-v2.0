@@ -1,0 +1,54 @@
+.loading-spinner-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 20px;
+}
+
+.loading-spinner {
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top: 3px solid var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 10px;
+}
+
+.loading-spinner p {
+  margin: 0;
+  font-size: 14px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* 작은 스피너 */
+.loading-spinner.small .spinner {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+}
+
+.loading-spinner.small p {
+  font-size: 12px;
+}
+
+/* 큰 스피너 */
+.loading-spinner.large .spinner {
+  width: 60px;
+  height: 60px;
+  border-width: 4px;
+}
+
+.loading-spinner.large p {
+  font-size: 16px;
+} 

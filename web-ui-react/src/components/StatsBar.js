@@ -7,7 +7,8 @@ const StatsBar = ({
   runningClients, 
   activeExecutions, 
   totalGroups,
-  totalPresets
+  totalPresets,
+  totalRunningPresets  // 새로 추가된 prop
 }) => {
   return (
     <div className="stats-bar">
@@ -25,8 +26,18 @@ const StatsBar = ({
           <div className="stat-label">⚡ 실행 중</div>
         </div>
         <div className="stat-item">
-          <div className="stat-value">{totalPresets}</div>
-          <div className="stat-label">📋 프리셋 수</div>
+          <div className="stat-value">
+            {totalPresets}
+            {totalRunningPresets > 0 && (
+              <span style={{ fontSize: '18px', color: '#22c55e' }}>
+                {' '}({totalRunningPresets})
+              </span>
+            )}
+          </div>
+          <div className="stat-label">
+            📋 프리셋
+            {totalRunningPresets > 0 && ' (실행 중)'}
+          </div>
         </div>
         <div className="stat-item">
           <div className="stat-value">{totalGroups}</div>

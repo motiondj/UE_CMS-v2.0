@@ -14,6 +14,25 @@ class ClientController {
     }
   }
 
+  // 클라이언트 변경사항 조회 (문서에 나온 API)
+  static async getChanges(req, res, next) {
+    try {
+      const { since } = req.query;
+      
+      // since 파라미터가 있으면 해당 시간 이후 변경된 클라이언트만 반환
+      const changes = await ClientModel.getChanges(since);
+      
+      res.json({
+        changed: changes.changed || [],
+        deleted: changes.deleted || [],
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      logger.error('클라이언트 변경사항 조회 실패:', error);
+      next(error);
+    }
+  }
+
   // 클라이언트 생성
   static async create(req, res, next) {
     try {
@@ -87,6 +106,36 @@ class ClientController {
       res.json({ message: '클라이언트가 삭제되었습니다.' });
     } catch (error) {
       logger.error('클라이언트 삭제 실패:', error);
+      next(error);
+    }
+  }
+
+  // 클라이언트 상태 업데이트 (문서에 나온 API)
+  static async updateStatus(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      
+      if (!status) {
+        return res.status(400).json({ 
+          error: '상태는 필수입니다.' 
+        });
+      }
+
+      const result = await ClientModel.updateStatus(id, status);
+      
+      if (result.success) {
+        // Socket으로 변경 알림
+        socketService.emit('client_status_changed', {
+          client_id: id,
+          status: status,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      res.json(result);
+    } catch (error) {
+      logger.error('클라이언트 상태 업데이트 실패:', error);
       next(error);
     }
   }

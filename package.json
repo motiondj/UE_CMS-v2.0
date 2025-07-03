@@ -4,10 +4,10 @@
   "description": "UE CMS v2.0 - nDisplay Content Management System",
   "main": "server/app.js",
   "scripts": {
-    "start": "cd server ; npm start",
-    "dev": "cd server ; npm run dev",
-    "build-ui": "cd web-ui-react ; npm run build",
-    "install-all": "npm install ; cd server ; npm install ; cd ../web-ui-react ; npm install"
+    "start": "cd server && npm start",
+    "dev": "cd server && npm run dev",
+    "build-ui": "cd web-ui-react && npm run build",
+    "install-all": "npm install && cd server && npm install && cd ../web-ui-react && npm install"
   },
   "keywords": [
     "ue-cms",

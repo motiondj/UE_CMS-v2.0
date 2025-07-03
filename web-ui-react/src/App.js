@@ -1,22 +1,45 @@
-import React, { useState, useEffect } from 'react';
-import io from 'socket.io-client';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import './App.css';
 import Header from './components/Header';
 import StatsBar from './components/StatsBar';
 import ClientMonitor from './components/ClientMonitor';
 import PresetSection from './components/PresetSection';
 import GroupSection from './components/GroupSection';
-import Toast from './components/Toast';
+import ToastContainer from './components/ToastContainer';
+import OfflineIndicator from './components/OfflineIndicator';
+import useSocket from './hooks/useSocket';
+import useToast from './hooks/useToast';
+import useServiceWorker from './hooks/useServiceWorker';
+import useKeyboardNavigation from './hooks/useKeyboardNavigation';
+import useRealtimeSync from './hooks/useRealtimeSync';
+import ErrorBoundary from './components/ErrorBoundary';
+import config from './config/environment';
+import performanceMonitor from './utils/performance';
 
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
+const API_BASE = config.API_BASE;
 
 function App() {
-  const [socket, setSocket] = useState(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [isSocketConnected, setIsSocketConnected] = useState(false);
   const [isApiConnected, setIsApiConnected] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
-  const [toast, setToast] = useState({ message: '', type: 'info' });
+  
+  // Custom Hooks 사용
+  const { socket, isConnected: isSocketConnected, on: socketOn } = useSocket(API_BASE);
+  const { showToast, toasts, removeToast } = useToast();
+  // Service Worker Hook
+  const { 
+    updateAvailable, 
+    offline, 
+    cacheInfo, 
+    applyUpdate
+  } = useServiceWorker();
+  // 실시간 동기화 Hook
+  const { syncError, initializeSync } = useRealtimeSync(API_BASE, {
+    syncInterval: 5000,
+    enableAutoSync: true,
+    enableHeartbeat: true,
+    heartbeatInterval: 10000
+  });
   
   // 데이터 상태
   const [clients, setClients] = useState([]);
@@ -24,177 +47,96 @@ function App() {
   const [presets, setPresets] = useState([]);
   const [executions, setExecutions] = useState([]);
 
-  // 통계 계산
-  const totalClients = clients.length;
-  const onlineClients = clients.filter(c => c.status === 'online' || c.status === 'running').length;
-  const runningClients = clients.filter(c => c.status === 'running').length;
-  const activeExecutions = executions.filter(e => e.status === 'running').length;
-  const totalGroups = groups.length;
-  
-  // 실행 중인 프리셋 수 계산 (현재 실행 중인 클라이언트가 있는 프리셋)
-  const runningPresets = new Set();
-  clients.forEach(client => {
-    if (client.status === 'running' && client.current_preset_id) {
-      runningPresets.add(client.current_preset_id);
+  // 통계 계산을 useMemo로 최적화
+  const stats = useMemo(() => {
+    const onlineClients = clients.filter(c => c.status === 'online' || c.status === 'running').length;
+    const runningClients = clients.filter(c => c.status === 'running').length;
+    const activeExecutions = executions.filter(e => e.status === 'running').length;
+    const runningPresets = presets.filter(preset => preset.is_running === true);
+    
+    return {
+      totalClients: clients.length,
+      onlineClients,
+      runningClients,
+      activeExecutions,
+      totalGroups: groups.length,
+      totalPresets: presets.length,
+      totalRunningPresets: runningPresets.length
+    };
+  }, [clients, groups, presets, executions]);
+
+
+
+  // 데이터 로드 함수들을 useCallback으로 최적화
+  const loadData = useCallback(async () => {
+    try {
+      const [clientsRes, groupsRes, presetsRes, executionsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/clients`),
+        fetch(`${API_BASE}/api/groups`),
+        fetch(`${API_BASE}/api/presets`),
+        fetch(`${API_BASE}/api/executions`)
+      ]);
+
+      if (clientsRes.ok) setClients(await clientsRes.json());
+      if (groupsRes.ok) setGroups(await groupsRes.json());
+      if (presetsRes.ok) setPresets(await presetsRes.json());
+      if (executionsRes.ok) setExecutions(await executionsRes.json());
+    } catch (error) {
+      console.error('데이터 로드 오류:', error);
+      showToast('데이터를 불러오는데 실패했습니다.', 'error');
     }
-  });
-  const totalRunningPresets = runningPresets.size;
+  }, [showToast]);
 
-  // Socket 연결
-  useEffect(() => {
-    const newSocket = io(API_BASE);
-    setSocket(newSocket);
-
-    newSocket.on('connect', () => {
-      setIsSocketConnected(true);
-      console.log('✅ Socket.io 연결됨');
-    });
-
-    newSocket.on('disconnect', () => {
-      setIsSocketConnected(false);
-      console.log('❌ Socket.io 연결 끊김');
-    });
-
-    // 클라이언트 추가 이벤트
-    newSocket.on('client_added', (client) => {
-      console.log('📡 클라이언트 추가 이벤트 수신:', client);
-      setClients(prevClients => {
-        // 중복 방지
-        const exists = prevClients.find(c => c.id === client.id);
-        if (exists) {
-          return prevClients.map(c => c.id === client.id ? client : c);
-        }
-        return [...prevClients, client];
-      });
-      showToast(`✅ 클라이언트 추가됨: ${client.name}`, 'success');
-    });
-
-    // 클라이언트 삭제 이벤트
-    newSocket.on('client_deleted', (data) => {
-      console.log('📡 클라이언트 삭제 이벤트 수신:', data);
-      setClients(prevClients => prevClients.filter(c => c.id !== data.id));
-      showToast('🗑️ 클라이언트가 삭제되었습니다', 'info');
-    });
-
-    // 클라이언트 상태 변경 이벤트
-    newSocket.on('client_status_changed', (data) => {
-      console.log('📡 클라이언트 상태 변경 이벤트 수신:', data);
-      setClients(prev => prev.map(c => 
-        c.name === data.name ? { ...c, status: data.status } : c
-      ));
-    });
-
-    // 클라이언트 업데이트 이벤트
-    newSocket.on('client_updated', (client) => {
-      console.log('📡 클라이언트 업데이트 이벤트 수신:', client);
-      setClients(prevClients => 
-        prevClients.map(c => c.id === client.id ? client : c)
-      );
-    });
-
-    newSocket.on('execution_update', (data) => {
-      setExecutions(prev => prev.map(exec => 
-        exec.id === data.execution_id 
-          ? { ...exec, ...data.updates }
-          : exec
-      ));
-    });
-
-    // 클라이언트 오프라인 상태 업데이트 처리
-    newSocket.on('clients_offline_updated', () => {
-      console.log('🔄 클라이언트 오프라인 상태 업데이트 감지');
-      loadData(); // 클라이언트 목록 새로고침
-      showToast('🔄 클라이언트 상태가 업데이트되었습니다.', 'info');
-    });
-
-    // MAC 주소 업데이트 이벤트 처리
-    newSocket.on('mac_address_updated', (data) => {
-      setClients(prev => prev.map(c => 
-        c.id === data.clientId ? { ...c, mac_address: data.macAddress } : c
-      ));
-      showToast(`MAC 주소 업데이트됨: ${data.clientName}`, 'success');
-    });
-
-    // 그룹 추가 이벤트 처리
-    newSocket.on('group_added', (newGroup) => {
-      try {
-        console.log('➕ 새 그룹 추가:', newGroup);
-        setGroups(prev => [newGroup, ...prev]);
-        showToast(`✨ 새 그룹 "${newGroup.name}"이(가) 추가되었습니다.`, 'success');
-      } catch (error) {
-        console.warn('그룹 추가 처리 중 오류:', error);
+  // 키보드 단축키 정의
+  const keyboardShortcuts = {
+    'ctrl+r': (e) => {
+      e.preventDefault(); // 브라우저 새로고침 방지
+      loadData();
+      showToast('🔄 데이터를 새로고침했습니다.', 'info');
+    },
+    'ctrl+n': () => {
+      // 현재 포커스된 섹션에 따라 다른 모달 열기
+      const activeElement = document.activeElement;
+      if (activeElement.closest('.preset-section')) {
+        // 프리셋 추가
+        document.querySelector('.preset-section .btn-add')?.click();
+      } else if (activeElement.closest('.group-section')) {
+        // 그룹 추가
+        document.querySelector('.group-section .btn-add')?.click();
+      } else {
+        // 기본: 클라이언트 추가
+        document.querySelector('.client-monitor .btn-add')?.click();
       }
-    });
-
-    // 그룹 업데이트 이벤트 처리
-    newSocket.on('group_updated', (updatedGroup) => {
-      try {
-        console.log('✏️ 그룹 업데이트:', updatedGroup);
-        setGroups(prev => prev.map(group => 
-          group.id === updatedGroup.id 
-            ? updatedGroup 
-            : group
-        ));
-        showToast(`🔄 그룹 "${updatedGroup.name}" 정보가 업데이트되었습니다.`, 'info');
-      } catch (error) {
-        console.warn('그룹 업데이트 처리 중 오류:', error);
+    },
+    'ctrl+/': () => {
+      // 도움말 표시
+      showToast('단축키: Ctrl+R(새로고침), Ctrl+N(추가), ESC(닫기)', 'info');
+    },
+    'escape': () => {
+      // 열려있는 모달 닫기
+      const openModal = document.querySelector('.modal.show');
+      if (openModal) {
+        openModal.querySelector('.modal-close')?.click();
       }
-    });
+    },
+  };
 
-    // 그룹 삭제 이벤트 처리
-    newSocket.on('group_deleted', (data) => {
-      try {
-        console.log('🗑️ 그룹 삭제:', data);
-        setGroups(prev => prev.filter(group => group.id !== data.id));
-        showToast('🗑️ 그룹이 삭제되었습니다.', 'info');
-      } catch (error) {
-        console.warn('그룹 삭제 처리 중 오류:', error);
-      }
-    });
+  // 키보드 네비게이션 활성화
+  useKeyboardNavigation(keyboardShortcuts);
 
-    // 프리셋 추가 이벤트 처리
-    newSocket.on('preset_added', (newPreset) => {
-      try {
-        console.log('⚡️ 새 프리셋 추가:', newPreset);
-        setPresets(prev => [newPreset, ...prev]);
-        showToast(`✨ 새 프리셋 "${newPreset.name}"이(가) 추가되었습니다.`, 'success');
-      } catch (error) {
-        console.warn('프리셋 추가 처리 중 오류:', error);
-      }
-    });
-
-    // 프리셋 업데이트 이벤트 처리
-    newSocket.on('preset_updated', (updatedPreset) => {
-      try {
-        console.log('✏️ 프리셋 업데이트:', updatedPreset);
-        setPresets(prev => prev.map(preset =>
-          preset.id === updatedPreset.id
-            ? updatedPreset
-            : preset
-        ));
-        showToast(`🔄 프리셋 "${updatedPreset.name}" 정보가 업데이트되었습니다.`, 'info');
-      } catch (error) {
-        console.warn('프리셋 업데이트 처리 중 오류:', error);
-      }
-    });
-
-    // 프리셋 삭제 이벤트 처리
-    newSocket.on('preset_deleted', (data) => {
-      try {
-        console.log('🗑️ 프리셋 삭제:', data);
-        setPresets(prev => prev.filter(preset => preset.id !== data.id));
-        showToast('🗑️ 프리셋이 삭제되었습니다.', 'info');
-      } catch (error) {
-        console.warn('프리셋 삭제 처리 중 오류:', error);
-      }
-    });
-
-    newSocket.on('preset_executed', (data) => {
-      showToast(`프리셋 실행됨: ${data.presetName}`, 'success');
-    });
-
-    return () => newSocket.close();
-  }, []);
+  // 클라이언트 목록만 새로고침 (성능 최적화) - 현재 사용하지 않음
+  // const loadClientsOnly = useCallback(async () => {
+  //   try {
+  //     const clientsRes = await fetch(`${API_BASE}/api/clients`);
+  //     if (clientsRes.ok) {
+  //       const updatedClients = await clientsRes.json();
+  //       setClients(updatedClients);
+  //       console.log('✅ 클라이언트 목록 자동 새로고침 완료');
+  //     }
+  //   } catch (error) {
+  //     console.error('클라이언트 목록 새로고침 오류:', error);
+  //   }
+  // }, []);
 
   // API 연결 상태 확인
   useEffect(() => {
@@ -203,24 +145,26 @@ function App() {
         const response = await fetch(`${API_BASE}/api/health`);
         if (response.ok) {
           setIsApiConnected(true);
+          console.log('✅ API 서버 연결됨');
         } else {
           setIsApiConnected(false);
+          console.log('❌ API 서버 연결 실패');
         }
       } catch (error) {
         setIsApiConnected(false);
+        console.log('❌ API 서버 연결 오류:', error);
       }
     };
 
     checkApiConnection();
-    const interval = setInterval(checkApiConnection, 30000);
+    const interval = setInterval(checkApiConnection, 10000); // 10초마다 체크
     return () => clearInterval(interval);
   }, []);
 
-  // 시간 업데이트
+  // 현재 시간 업데이트
   useEffect(() => {
     const updateTime = () => {
-      const now = new Date();
-      setCurrentTime(now.toLocaleTimeString('ko-KR', {
+      setCurrentTime(new Date().toLocaleTimeString('ko-KR', {
         hour12: true, 
         hour: '2-digit', 
         minute: '2-digit', 
@@ -247,53 +191,211 @@ function App() {
     if (isApiConnected) {
       loadData();
     }
-  }, [isApiConnected]);
+  }, [isApiConnected, loadData]);
 
-  // 5초마다 클라이언트 목록 자동 새로고침
+  // 실시간 동기화 초기화
   useEffect(() => {
-    if (!isApiConnected) return;
-
-    const interval = setInterval(() => {
-      console.log('🔄 5초마다 클라이언트 목록 자동 새로고침');
-      loadClientsOnly(); // 클라이언트만 새로고침 (성능 최적화)
-    }, 5000); // 5초
-
-    return () => clearInterval(interval);
-  }, [isApiConnected]);
-
-  const loadData = async () => {
-    try {
-      const [clientsRes, groupsRes, presetsRes, executionsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/clients`),
-        fetch(`${API_BASE}/api/groups`),
-        fetch(`${API_BASE}/api/presets`),
-        fetch(`${API_BASE}/api/executions`)
-      ]);
-
-      if (clientsRes.ok) setClients(await clientsRes.json());
-      if (groupsRes.ok) setGroups(await groupsRes.json());
-      if (presetsRes.ok) setPresets(await presetsRes.json());
-      if (executionsRes.ok) setExecutions(await executionsRes.json());
-    } catch (error) {
-      console.error('데이터 로드 오류:', error);
+    if (isApiConnected) {
+      initializeSync(new Date().toISOString());
     }
-  };
+  }, [isApiConnected, initializeSync]);
 
-  // 클라이언트 목록만 새로고침 (성능 최적화)
-  const loadClientsOnly = async () => {
-    try {
-      const clientsRes = await fetch(`${API_BASE}/api/clients`);
-      if (clientsRes.ok) {
-        const updatedClients = await clientsRes.json();
-        setClients(updatedClients);
-        console.log('✅ 클라이언트 목록 자동 새로고침 완료');
+  // 동기화 오류 처리
+  useEffect(() => {
+    if (syncError) {
+      showToast(`동기화 오류: ${syncError}`, 'error');
+    }
+  }, [syncError, showToast]);
+
+  // 성능 모니터링 시작
+  useEffect(() => {
+    if (config.DEBUG_MODE) {
+      performanceMonitor.startMonitoring();
+    }
+  }, []);
+
+  // Socket 이벤트 설정
+  useEffect(() => {
+    if (!socket) return;
+
+    // 클라이언트 추가 이벤트
+    socketOn('client_added', (client) => {
+      console.log('📡 클라이언트 추가 이벤트 수신:', client);
+      setClients(prevClients => {
+        // 중복 방지
+        const exists = prevClients.find(c => c.id === client.id);
+        if (exists) {
+          return prevClients.map(c => c.id === client.id ? client : c);
+        }
+        return [...prevClients, client];
+      });
+      showToast(`✅ 클라이언트 추가됨: ${client.name}`, 'success');
+    });
+
+    // 클라이언트 삭제 이벤트
+    socketOn('client_deleted', (data) => {
+      console.log('📡 클라이언트 삭제 이벤트 수신:', data);
+      setClients(prevClients => prevClients.filter(c => c.id !== data.id));
+      showToast('🗑️ 클라이언트가 삭제되었습니다', 'info');
+    });
+
+    // 클라이언트 상태 변경 이벤트
+    socketOn('client_status_changed', (data) => {
+      console.log('📡 클라이언트 상태 변경 이벤트 수신:', data);
+      setClients(prev => prev.map(c => 
+        c.name === data.name ? { ...c, status: data.status } : c
+      ));
+    });
+
+    // 클라이언트 업데이트 이벤트
+    socketOn('client_updated', (client) => {
+      console.log('📡 클라이언트 업데이트 이벤트 수신:', client);
+      setClients(prevClients => 
+        prevClients.map(c => c.id === client.id ? client : c)
+      );
+    });
+
+    socketOn('execution_update', (data) => {
+      setExecutions(prev => prev.map(exec => 
+        exec.id === data.execution_id 
+          ? { ...exec, ...data.updates }
+          : exec
+      ));
+    });
+
+    // 클라이언트 오프라인 상태 업데이트 처리
+    socketOn('clients_offline_updated', () => {
+      console.log('🔄 클라이언트 오프라인 상태 업데이트 감지');
+      loadData(); // 클라이언트 목록 새로고침
+      showToast('🔄 클라이언트 상태가 업데이트되었습니다.', 'info');
+    });
+
+    // MAC 주소 업데이트 이벤트 처리
+    socketOn('mac_address_updated', (data) => {
+      setClients(prev => prev.map(c => 
+        c.id === data.clientId ? { ...c, mac_address: data.macAddress } : c
+      ));
+      showToast(`MAC 주소 업데이트됨: ${data.clientName}`, 'success');
+    });
+
+    // 그룹 추가 이벤트 처리
+    socketOn('group_added', (newGroup) => {
+      try {
+        console.log('➕ 새 그룹 추가:', newGroup);
+        setGroups(prev => [newGroup, ...prev]);
+        showToast(`✨ 새 그룹 "${newGroup.name}"이(가) 추가되었습니다.`, 'success');
+      } catch (error) {
+        console.warn('그룹 추가 처리 중 오류:', error);
       }
-    } catch (error) {
-      console.error('클라이언트 목록 새로고침 오류:', error);
-    }
-  };
+    });
 
-  const toggleDarkMode = () => {
+    // 그룹 업데이트 이벤트 처리
+    socketOn('group_updated', (updatedGroup) => {
+      try {
+        console.log('✏️ 그룹 업데이트:', updatedGroup);
+        setGroups(prev => prev.map(group => 
+          group.id === updatedGroup.id 
+            ? updatedGroup 
+            : group
+        ));
+        showToast(`🔄 그룹 "${updatedGroup.name}" 정보가 업데이트되었습니다.`, 'info');
+      } catch (error) {
+        console.warn('그룹 업데이트 처리 중 오류:', error);
+      }
+    });
+
+    // 그룹 삭제 이벤트 처리
+    socketOn('group_deleted', (data) => {
+      try {
+        console.log('🗑️ 그룹 삭제:', data);
+        setGroups(prev => prev.filter(group => group.id !== data.id));
+        showToast('🗑️ 그룹이 삭제되었습니다.', 'info');
+      } catch (error) {
+        console.warn('그룹 삭제 처리 중 오류:', error);
+      }
+    });
+
+    // 프리셋 추가 이벤트 처리
+    socketOn('preset_added', (newPreset) => {
+      try {
+        console.log('⚡️ 새 프리셋 추가:', newPreset);
+        setPresets(prev => [newPreset, ...prev]);
+        showToast(`✨ 새 프리셋 "${newPreset.name}"이(가) 추가되었습니다.`, 'success');
+      } catch (error) {
+        console.warn('프리셋 추가 처리 중 오류:', error);
+      }
+    });
+
+    // 프리셋 업데이트 이벤트 처리
+    socketOn('preset_updated', (updatedPreset) => {
+      try {
+        console.log('✏️ 프리셋 업데이트:', updatedPreset);
+        setPresets(prev => prev.map(preset =>
+          preset.id === updatedPreset.id
+            ? updatedPreset
+            : preset
+        ));
+        showToast(`🔄 프리셋 "${updatedPreset.name}" 정보가 업데이트되었습니다.`, 'info');
+      } catch (error) {
+        console.warn('프리셋 업데이트 처리 중 오류:', error);
+      }
+    });
+
+    // 프리셋 삭제 이벤트 처리
+    socketOn('preset_deleted', (data) => {
+      try {
+        console.log('🗑️ 프리셋 삭제:', data);
+        setPresets(prev => prev.filter(preset => preset.id !== data.id));
+        showToast('🗑️ 프리셋이 삭제되었습니다.', 'info');
+      } catch (error) {
+        console.warn('프리셋 삭제 처리 중 오류:', error);
+      }
+    });
+
+    socketOn('preset_executed', (data) => {
+      showToast(`프리셋 실행됨: ${data.presetName}`, 'success');
+    });
+
+    // 프리셋 상태 변경 이벤트 추가
+    socketOn('preset_status_changed', (data) => {
+      console.log('📡 프리셋 상태 변경:', data);
+      
+      // 프리셋 실행 상태 업데이트
+      setPresets(prev => prev.map(preset => 
+        preset.id === data.preset_id 
+          ? { 
+              ...preset, 
+              is_running: data.status === 'running',
+              running_client_ids: data.running_clients || data.stopped_clients || []
+            }
+          : preset
+      ));
+
+      // 실행 중인 프리셋 수 재계산을 위해 상태 업데이트
+      if (data.status === 'running') {
+        showToast(`⚡ 프리셋이 실행되었습니다`, 'success');
+      } else if (data.status === 'stopped') {
+        showToast(`⏹️ 프리셋이 정지되었습니다`, 'info');
+      }
+    });
+
+    // 클라이언트 상태 변경 이벤트 수정
+    socketOn('client_status_changed', (data) => {
+      console.log('📡 클라이언트 상태 변경:', data);
+      setClients(prev => prev.map(c => 
+        c.id === data.client_id 
+          ? { 
+              ...c, 
+              status: data.status,
+              current_preset_id: data.current_preset_id || null
+            } 
+          : c
+      ));
+    });
+
+  }, [socket, socketOn, showToast, loadData]);
+
+  const toggleDarkMode = useCallback(() => {
     const newDarkMode = !isDarkMode;
     setIsDarkMode(newDarkMode);
     
@@ -306,127 +408,84 @@ function App() {
       localStorage.setItem('theme', 'light');
       showToast('☀️ 라이트 모드가 활성화되었습니다.', 'success');
     }
-  };
+  }, [isDarkMode, showToast]);
 
-  const showToast = (message, type = 'info') => {
-    setToast({ message, type });
-  };
 
-  const handleRefresh = () => {
-    loadData();
-    showToast('🔄 데이터를 새로고침했습니다.', 'info');
-  };
 
-  const handleClientUpdate = (updatedClient) => {
+  const handleClientUpdate = useCallback((updatedClient) => {
     if (updatedClient) {
-      // 클라이언트 수정 시
       setClients(prevClients => 
         prevClients.map(client => 
           client.id === updatedClient.id ? updatedClient : client
         )
       );
     } else {
-      // 클라이언트 삭제 시 - 전체 데이터 다시 로드
       loadData();
     }
-  };
-
-  // 데모 데이터 생성 (개발용) - 비활성화
-  // useEffect(() => {
-  //   if (clients.length === 0 && groups.length === 0 && presets.length === 0) {
-  //     setTimeout(() => {
-  //       createDemoData();
-  //     }, 3000);
-  //   }
-  // }, [clients.length, groups.length, presets.length]);
-
-  const createDemoData = () => {
-    // 데모 클라이언트 생성
-    const demoClients = [
-      { id: 'demo_client_1', name: 'Display_01', ip_address: '192.168.1.101', status: 'online', port: 8081, description: '데모 클라이언트 1', created_at: new Date(), last_seen: new Date() },
-      { id: 'demo_client_2', name: 'Display_02', ip_address: '192.168.1.102', status: 'running', port: 8081, description: '데모 클라이언트 2', created_at: new Date(), last_seen: new Date() },
-      { id: 'demo_client_3', name: 'Display_03', ip_address: '192.168.1.103', status: 'offline', port: 8081, description: '데모 클라이언트 3', created_at: new Date(), last_seen: null },
-      { id: 'demo_client_4', name: 'Display_04', ip_address: '192.168.1.104', status: 'online', port: 8081, description: '데모 클라이언트 4', created_at: new Date(), last_seen: new Date() }
-    ];
-    setClients(demoClients);
-
-    // 데모 그룹 생성
-    setTimeout(() => {
-      const demoGroup = {
-        id: 'demo_group_1',
-        name: '메인 디스플레이 월',
-        description: '중앙 메인 디스플레이 구역',
-        client_ids: ['demo_client_1', 'demo_client_2', 'demo_client_4'],
-        created_at: new Date()
-      };
-      setGroups([demoGroup]);
-    }, 500);
-
-    // 데모 프리셋 생성
-    setTimeout(() => {
-      const demoPreset = {
-        id: 'demo_preset_1',
-        name: '메인 콘텐츠 재생',
-        description: '4K 메인 콘텐츠 스트리밍',
-        group_id: 'demo_group_1',
-        client_commands: {
-          'demo_client_1': 'D:\\UnrealProjects\\MainContent\\Windows\\MainContent.exe -dc_node=Node_0 -fullscreen',
-          'demo_client_2': 'D:\\UnrealProjects\\MainContent\\Windows\\MainContent.exe -dc_node=Node_1 -fullscreen',
-          'demo_client_4': 'D:\\UnrealProjects\\MainContent\\Windows\\MainContent.exe -dc_node=Node_2 -fullscreen'
-        },
-        created_at: new Date(),
-        is_active: false
-      };
-      setPresets([demoPreset]);
-    }, 1000);
-
-    showToast('🎮 데모 데이터가 로드되었습니다! 이제 프리셋을 만들어보세요.', 'success');
-  };
+  }, [loadData]);
 
   return (
-    <div className={`App ${isDarkMode ? 'dark-mode' : ''}`}>
-      <Header 
+    <ErrorBoundary>
+      <div className={`App ${isDarkMode ? 'dark-mode' : ''}`}>
+        {/* Skip to Content 링크 - 접근성 개선 */}
+        <a href="#main-content" className="skip-to-content">
+          메인 콘텐츠로 건너뛰기
+        </a>
+        
+        {/* Service Worker 상태 표시 */}
+        <OfflineIndicator 
+          offline={offline}
+          updateAvailable={updateAvailable}
+          onApplyUpdate={applyUpdate}
+          cacheInfo={cacheInfo}
+        />
+        
+              <Header 
         isDarkMode={isDarkMode} 
         toggleDarkMode={toggleDarkMode}
         isSocketConnected={isSocketConnected}
         isApiConnected={isApiConnected}
         currentTime={currentTime}
-        onRefresh={handleRefresh}
       />
-      <div className="container">
-        <StatsBar 
-          totalClients={totalClients}
-          onlineClients={onlineClients}
-          runningClients={runningClients}
-          activeExecutions={activeExecutions}
-          totalGroups={totalGroups}
-          totalRunningPresets={totalRunningPresets}
-          totalPresets={presets.length}
-        />
-        <div className="main-layout">
-            <PresetSection 
-              presets={presets}
-              groups={groups}
-              clients={clients}
+        <div className="container" id="main-content">
+          <ErrorBoundary>
+            <StatsBar {...stats} />
+          </ErrorBoundary>
+          
+          <div className="main-layout">
+            <ErrorBoundary>
+              <PresetSection 
+                presets={presets}
+                groups={groups}
+                clients={clients}
+                apiBase={API_BASE}
+                showToast={showToast}
+              />
+            </ErrorBoundary>
+            
+            <ErrorBoundary>
+              <GroupSection 
+                groups={groups}
+                clients={clients}
+                apiBase={API_BASE}
+                showToast={showToast}
+              />
+            </ErrorBoundary>
+          </div>
+          
+          <ErrorBoundary>
+            <ClientMonitor 
+              clients={clients} 
+              onClientUpdate={handleClientUpdate}
               apiBase={API_BASE}
               showToast={showToast}
             />
-            <GroupSection 
-              groups={groups}
-              clients={clients}
-              apiBase={API_BASE}
-              showToast={showToast}
-            />
+          </ErrorBoundary>
         </div>
-        <ClientMonitor 
-            clients={clients} 
-            onClientUpdate={handleClientUpdate}
-            apiBase={API_BASE}
-            showToast={showToast}
-        />
+        
+        <ToastContainer toasts={toasts} onRemove={removeToast} />
       </div>
-      <Toast message={toast.message} type={toast.type} onClear={() => setToast({ message: '', type: 'info' })} />
-    </div>
+    </ErrorBoundary>
   );
 }
 

@@ -19,14 +19,24 @@ module.exports = {
       origin: '*',
       methods: ['GET', 'POST']
     },
-    pingInterval: 30000,  // 30초 (기존: 25초)
-    pingTimeout: 120000,  // 2분 (기존: 60초) - 더 관대하게
+    pingInterval: 60000,  // 1분 (기존: 30초) - 더 관대하게
+    pingTimeout: 300000,  // 5분 (기존: 2분) - 더 관대하게
     transports: ['websocket', 'polling'],
     
     // 새로 추가
     allowEIO3: true,      // 호환성 향상
     maxHttpBufferSize: 1e6, // 1MB
-    connectTimeout: 60000   // 1분 연결 타임아웃
+    connectTimeout: 60000,   // 1분 연결 타임아웃
+    
+    // 연결 유지 설정 추가
+    allowUpgrades: true,
+    upgradeTimeout: 10000,
+    maxHttpBufferSize: 1e6,
+    
+    // 클라이언트 연결 해제 방지
+    allowRequest: (req, callback) => {
+      callback(null, true); // 모든 연결 허용
+    }
   },
   
   // 데이터베이스 설정

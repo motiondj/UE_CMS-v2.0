@@ -1,7 +1,7 @@
 const db = require('../config/database');
 
 const migrations = [
-  // 클라이언트 테이블
+  // 클라이언트 테이블 (기본 구조)
   `CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
@@ -86,7 +86,7 @@ const migrations = [
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`,
   
-  // 인덱스들
+  // 기본 인덱스들
   `CREATE INDEX IF NOT EXISTS idx_clients_ip ON clients(ip_address)`,
   `CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)`,
   `CREATE INDEX IF NOT EXISTS idx_ip_mac_history_ip ON ip_mac_history(ip_address)`,
@@ -95,12 +95,40 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS idx_execution_history_time ON execution_history(executed_at)`
 ];
 
+// 추가 마이그레이션 (컬럼 추가)
+const additionalMigrations = [
+  // 기존 테이블에 컬럼 추가
+  `ALTER TABLE clients ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+  `ALTER TABLE clients ADD COLUMN status_changed_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+  
+  // 추가 인덱스들
+  `CREATE INDEX IF NOT EXISTS idx_clients_updated_at ON clients(updated_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_clients_status_changed_at ON clients(status_changed_at)`
+];
+
 async function runMigrations() {
   console.log('🔄 데이터베이스 마이그레이션 시작...');
   
   try {
+    // 기본 마이그레이션 실행
     for (const migration of migrations) {
       await db.run(migration);
+    }
+    
+    console.log('✅ 기본 마이그레이션 완료');
+    
+    // 추가 마이그레이션 실행 (실패해도 무시)
+    for (const migration of additionalMigrations) {
+      try {
+        await db.run(migration);
+      } catch (error) {
+        // ALTER TABLE이나 인덱스 생성 실패는 무시
+        if (error.code === 'SQLITE_ERROR') {
+          console.log('ℹ️ 이미 존재함:', migration);
+        } else {
+          console.log('⚠️ 마이그레이션 경고:', error.message);
+        }
+      }
     }
     
     console.log('✅ 데이터베이스 마이그레이션 완료');

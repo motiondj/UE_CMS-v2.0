@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const logger = require('../utils/logger');
 
 class ClientModel {
   // 모든 클라이언트 조회 (MAC 주소 포함)
@@ -22,6 +23,54 @@ class ClientModel {
     `;
     
     return await db.all(query);
+  }
+
+  // 클라이언트 변경사항 조회 (문서에 나온 API)
+  static async getChanges(since = null) {
+    try {
+      let query = '';
+      let params = [];
+      
+      if (since) {
+        // ISO 8601 형식의 시간을 파싱하여 해당 시간 이후 변경된 클라이언트만 반환
+        query = `
+          SELECT 
+            c.*,
+            cpi.mac_address,
+            cpi.is_manual as mac_is_manual
+          FROM clients c
+          LEFT JOIN (
+            SELECT client_id, mac_address, is_manual, updated_at 
+            FROM client_power_info cpi1 
+            WHERE updated_at = (
+              SELECT MAX(updated_at) 
+              FROM client_power_info cpi2 
+              WHERE cpi2.client_id = cpi1.client_id
+            )
+          ) cpi ON c.id = cpi.client_id
+          WHERE c.updated_at > ? OR c.last_seen > ? OR c.status_changed_at > ?
+          ORDER BY c.id
+        `;
+        params = [since, since, since];
+      } else {
+        // since가 없으면 모든 클라이언트 반환
+        return await this.findAll();
+      }
+      
+      const changed = await db.all(query, params);
+      
+      // 삭제된 클라이언트는 별도 테이블에서 관리하지 않으므로 빈 배열 반환
+      const deleted = [];
+      
+      return {
+        changed,
+        deleted,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      logger.error('클라이언트 변경사항 조회 실패:', error);
+      throw error;
+    }
   }
 
   // ID로 클라이언트 조회
@@ -73,7 +122,7 @@ class ClientModel {
 
     // 업데이트
     await db.run(
-      'UPDATE clients SET name = ?, ip_address = ?, port = ? WHERE id = ?',
+      'UPDATE clients SET name = ?, ip_address = ?, port = ?, updated_at = datetime("now") WHERE id = ?',
       [name, ip_address, port, id]
     );
 
@@ -103,14 +152,23 @@ class ClientModel {
     });
   }
 
-  // 상태 업데이트
+  // 상태 업데이트 (문서에 나온 API)
   static async updateStatus(id, status) {
-    const result = await db.run(
-      'UPDATE clients SET status = ?, last_seen = datetime("now") WHERE id = ?',
-      [status, id]
-    );
-    
-    return result.changes > 0;
+    try {
+      const result = await db.run(
+        'UPDATE clients SET status = ?, status_changed_at = datetime("now"), updated_at = datetime("now") WHERE id = ?',
+        [status, id]
+      );
+      
+      if (result.changes === 0) {
+        return { success: false, error: '클라이언트를 찾을 수 없습니다' };
+      }
+      
+      return { success: true };
+    } catch (error) {
+      logger.error('클라이언트 상태 업데이트 실패:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   // 하트비트 업데이트
@@ -121,7 +179,7 @@ class ClientModel {
     if (client) {
       // 기존 클라이언트 업데이트
       await db.run(
-        'UPDATE clients SET ip_address = ?, port = ?, status = ?, last_seen = datetime("now") WHERE id = ?',
+        'UPDATE clients SET ip_address = ?, port = ?, status = ?, last_seen = datetime("now"), updated_at = datetime("now"), status_changed_at = datetime("now") WHERE id = ?',
         [ip_address, port, 'online', client.id]
       );
       return await this.findById(client.id);

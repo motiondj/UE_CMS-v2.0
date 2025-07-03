@@ -1,0 +1,98 @@
+.offline-indicator-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.offline-banner {
+  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  padding: 8px 16px;
+  animation: slideDown 0.3s ease;
+}
+
+.update-banner {
+  background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+  padding: 8px 16px;
+  animation: slideDown 0.3s ease;
+}
+
+.offline-content,
+.update-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.offline-icon,
+.update-icon {
+  font-size: 16px;
+}
+
+.offline-text,
+.update-text {
+  flex: 1;
+  text-align: center;
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-sm:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.cache-info {
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 4px 16px;
+  font-size: 11px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.cache-text {
+  font-family: 'Courier New', monospace;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* 다크 모드 대응 */
+.dark-mode .offline-banner {
+  background: linear-gradient(90deg, #dc2626 0%, #b91c1c 100%);
+}
+
+.dark-mode .update-banner {
+  background: linear-gradient(90deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+.dark-mode .cache-info {
+  background: rgba(0, 0, 0, 0.9);
+} 

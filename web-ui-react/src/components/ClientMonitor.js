@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import './ClientMonitor.css';
 
-const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
+const ClientMonitor = memo(({ clients, showToast, onClientUpdate }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -237,7 +237,7 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
     if (!mac) return null;
     
     // 모든 공백과 특수문자 제거
-    let cleaned = mac.replace(/[^0-9A-Fa-f]/g, '');
+    const cleaned = mac.replace(/[^0-9A-Fa-f]/g, '');
     
     // 12자리 16진수인지 확인
     if (cleaned.length !== 12) return null;
@@ -697,6 +697,6 @@ const ClientMonitor = ({ clients, showToast, onClientUpdate }) => {
       )}
     </div>
   );
-};
+});
 
 export default ClientMonitor; 

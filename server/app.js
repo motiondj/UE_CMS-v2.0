@@ -12,7 +12,8 @@ const logger = require('./utils/logger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
 // 서비스
-const socketService = require('./services/socketService');
+const SocketService = require('./services/socketService');
+const heartbeatService = require('./services/heartbeatService');
 
 // 라우트
 const routes = require('./routes');
@@ -61,13 +62,18 @@ async function startServer() {
     await runMigrations();
     
     // Socket.IO 초기화
+    const socketService = new SocketService();
     socketService.initialize(server);
+    
+    // 하트비트 서비스 시작
+    await heartbeatService.start();
     
     // 서버 시작
     server.listen(config.server.port, () => {
       logger.info(`🚀 UE CMS Server 시작됨`);
       logger.info(`📱 웹 인터페이스: http://localhost:${config.server.port}`);
       logger.info(`🔌 Socket.IO 활성화됨`);
+      logger.info(`💓 하트비트 서비스 활성화됨`);
     });
     
   } catch (error) {
@@ -81,8 +87,8 @@ process.on('SIGINT', async () => {
   logger.info('서버 종료 시작...');
   
   try {
-    // Socket 서비스에게 정상 종료 알림
-    await socketService.gracefulShutdown();
+    // 하트비트 서비스 중지
+    await heartbeatService.stop();
     
     // 잠시 대기 (클라이언트들이 알림을 받을 시간)
     await new Promise(resolve => setTimeout(resolve, 2000));

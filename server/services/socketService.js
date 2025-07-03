@@ -7,11 +7,6 @@ class SocketService {
     this.io = null;
     this.connectedClients = new Map();
     this.clientTimeouts = new Map();
-    
-    // 새로 추가할 속성들 (문서 2.1 정확히 따름)
-    this.clientHeartbeats = new Map();     // 하트비트 기록
-    this.clientReconnectTimers = new Map(); // 재연결 타이머
-    this.gracefulShutdown = false;         // 정상 종료 플래그
   }
 
   initialize(server) {
@@ -19,12 +14,20 @@ class SocketService {
     
     this.io.on('connection', (socket) => {
       const clientIP = this.normalizeIP(socket.handshake.address);
-      const isWebUI = clientIP === '127.0.0.1' || clientIP === '::1';
+      const userAgent = socket.handshake.headers['user-agent'] || '';
+      
+      // 웹 UI는 localhost IP이면서 브라우저 User-Agent를 가진 경우
+      const isWebUI = (clientIP === '127.0.0.1' || clientIP === '::1') && 
+                     (userAgent.includes('Mozilla') || userAgent.includes('Chrome') || userAgent.includes('Safari'));
       
       if (isWebUI) {
-        console.log(`[DEBUG] 웹 UI 연결: ${socket.id} (IP: ${clientIP})`);
+        console.log(`[DEBUG] 웹 UI 연결: ${socket.id} (IP: ${clientIP}, UA: ${userAgent.substring(0, 50)})`);
+        socket.clientType = 'web';
+        socket.isWebUI = true;
       } else {
-        console.log(`[INFO] 클라이언트 연결: ${socket.id} (IP: ${clientIP})`);
+        console.log(`[DEBUG] 클라이언트 연결: ${socket.id} (IP: ${clientIP}, UA: ${userAgent.substring(0, 50)})`);
+        socket.clientType = 'python';
+        socket.isWebUI = false;
       }
       
       this.handleConnection(socket);
@@ -38,14 +41,40 @@ class SocketService {
   }
 
   handleConnection(socket) {
-    // 클라이언트 등록
+    // 웹 UI와 클라이언트 구분 - User-Agent와 IP를 함께 확인
+    const clientIP = this.normalizeIP(socket.handshake.address);
+    const userAgent = socket.handshake.headers['user-agent'] || '';
+    
+    // 웹 UI는 localhost IP이면서 브라우저 User-Agent를 가진 경우
+    const isWebUI = (clientIP === '127.0.0.1' || clientIP === '::1') && 
+                   (userAgent.includes('Mozilla') || userAgent.includes('Chrome') || userAgent.includes('Safari'));
+    
+    if (isWebUI) {
+      console.log(`[DEBUG] 웹 UI 연결: ${socket.id} (IP: ${clientIP}, UA: ${userAgent.substring(0, 50)})`);
+      socket.clientType = 'web';
+      socket.isWebUI = true;
+    } else {
+      console.log(`[DEBUG] 클라이언트 연결: ${socket.id} (IP: ${clientIP}, UA: ${userAgent.substring(0, 50)})`);
+      socket.clientType = 'python';
+      socket.isWebUI = false;
+    }
+    
+    // 클라이언트 등록 (웹 UI는 등록하지 않음)
     socket.on('register_client', (data) => {
+      if (socket.isWebUI) {
+        console.log(`[WARN] 웹 UI에서 클라이언트 등록 요청 - 무시: ${socket.id}`);
+        return;
+      }
       console.log(`[INFO] 클라이언트 등록 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
       this.handleRegister(socket, data);
     });
     
-    // 하트비트
+    // 하트비트 (웹 UI는 하트비트를 보내지 않음)
     socket.on('heartbeat', (data) => {
+      if (socket.isWebUI) {
+        console.log(`[WARN] 웹 UI에서 하트비트 요청 - 무시: ${socket.id}`);
+        return;
+      }
       console.log(`[INFO] 하트비트 요청 수신: ${socket.id} - ${JSON.stringify(data)}`);
       this.handleHeartbeat(socket, data);
     });
@@ -72,7 +101,9 @@ class SocketService {
     // 연결 해제
     socket.on('disconnect', (reason) => {
       const clientIP = this.normalizeIP(socket.handshake.address);
-      const isWebUI = clientIP === '127.0.0.1' || clientIP === '::1';
+      const userAgent = socket.handshake.headers['user-agent'] || '';
+      const isWebUI = (clientIP === '127.0.0.1' || clientIP === '::1') && 
+                     (userAgent.includes('Mozilla') || userAgent.includes('Chrome') || userAgent.includes('Safari'));
       
       if (isWebUI) {
         console.log(`[DEBUG] 웹 UI 연결 해제: ${socket.id} (이유: ${reason})`);
@@ -86,46 +117,6 @@ class SocketService {
     // 에러 처리
     socket.on('error', (error) => {
       console.log(`[ERROR] 소켓 에러: ${socket.id} - ${error}`);
-    });
-    
-    // 새로운 이벤트들 추가 (문서 5번 정확히 따름)
-    // 서버 상태 알림 이벤트 추가
-    socket.on('client_status_request', async (data) => {
-      try {
-        const { clientName } = data;
-        const client = await ClientModel.findByName(clientName);
-        
-        if (client) {
-          socket.emit('server_status_response', {
-            serverStatus: 'online',
-            clientStatus: client.status,
-            timestamp: new Date().toISOString(),
-            serverUptime: process.uptime(),
-            message: '서버가 정상 동작 중입니다.'
-          });
-        }
-      } catch (error) {
-        socket.emit('server_status_response', {
-          serverStatus: 'error',
-          timestamp: new Date().toISOString(),
-          message: '서버 상태 조회 중 오류 발생'
-        });
-      }
-    });
-    
-    // 재연결 성공 알림
-    socket.on('reconnection_success', async (data) => {
-      const { clientName } = data;
-      console.log(`[INFO] 클라이언트 재연결 성공: ${clientName}`);
-      
-      // 재연결 타이머 정리
-      this.clearReconnectTimer(clientName);
-      
-      // 웹 UI에 알림
-      this.emit('client_reconnected', {
-        clientName: clientName,
-        timestamp: new Date().toISOString()
-      });
     });
   }
 
@@ -180,70 +171,33 @@ class SocketService {
 
   async handleHeartbeat(socket, data) {
     try {
-      const { clientName, ip_address, timestamp } = data;
-      const clientIP = ip_address || this.normalizeIP(socket.handshake.address || '127.0.0.1');
+      const { clientName } = data;
       
-      console.log(`[INFO] 하트비트 수신: ${clientName} (${clientIP})`);
-      
-      // 하트비트 기록 업데이트 (문서 2.2 정확히 따름)
-      this.clientHeartbeats.set(clientName, {
-        lastHeartbeat: new Date(),
-        consecutiveMisses: 0,
-        clientIP: clientIP
-      });
-      
-      // 재연결 타이머 클리어 (정상 연결됨)
-      this.clearReconnectTimer(clientName);
-      
-      // 소켓 연결 상태 확인
-      if (!socket.connected) {
-        console.log(`[WARN] 하트비트 처리 실패: 소켓이 연결되지 않음 - ${clientName}`);
+      if (!clientName) {
+        console.log(`[WARN] 하트비트에 클라이언트 이름이 없음: ${socket.id}`);
         return;
       }
       
-      // 클라이언트 정보 업데이트
-      const client = await ClientModel.updateHeartbeat(clientName, clientIP);
+      // 하트비트 서비스에 전달
+      const heartbeatService = require('./heartbeatService');
+      await heartbeatService.receiveHeartbeat(clientName);
       
-      if (client) {
-        // 소켓 연결 관리
-        this.registerSocket(client.name, socket);
-        socket.clientName = client.name;
-        
-        // 상태 업데이트 (강제로 online 설정)
-        await ClientModel.updateStatus(client.id, 'online');
-        this.emit('client_status_changed', { 
-          id: client.id, 
-          name: client.name, 
-          status: 'online',
-          lastHeartbeat: new Date()
-        });
-        
-        // 하트비트 응답 (클라이언트에게 성공 알림)
-        if (socket.connected) {
-          socket.emit('heartbeat_response', {
-            status: 'ok',
-            timestamp: new Date().toISOString(),
-            message: '하트비트 수신 완료',
-            nextHeartbeatIn: config.monitoring.healthCheckInterval
-          });
-        }
-        
-        console.log(`[INFO] 하트비트 처리 완료: ${client.name}`);
-      } else {
-        console.log(`[WARN] 하트비트 처리 실패: 클라이언트를 찾을 수 없음 - ${clientName}`);
-      }
+      // 클라이언트에게 응답
+      socket.emit('heartbeat_response', {
+        success: true,
+        timestamp: new Date().toISOString(),
+        message: '하트비트 수신됨'
+      });
+      
+      console.log(`[INFO] 하트비트 처리 완료: ${clientName}`);
     } catch (error) {
-      console.log(`[ERROR] 하트비트 처리 실패:`, error);
+      console.error(`[ERROR] 하트비트 처리 실패: ${error.message}`);
       
-      // 오류가 발생해도 클라이언트에게 알림
-      if (socket && socket.connected) {
-        socket.emit('heartbeat_response', {
-          status: 'error',
-          timestamp: new Date().toISOString(),
-          message: '하트비트 처리 중 오류 발생',
-          shouldReconnect: true
-        });
-      }
+      socket.emit('heartbeat_response', {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
     }
   }
 
@@ -434,32 +388,24 @@ class SocketService {
 
   // 정상 종료 처리 (문서 2.4 정확히 따름)
   async gracefulShutdown() {
-    console.log('[INFO] Socket 서비스 정상 종료 시작...');
-    this.gracefulShutdown = true;
-    
-    // 모든 클라이언트에게 서버 종료 알림
-    this.emit('server_shutdown', {
-      message: '서버가 종료됩니다. 잠시 후 재연결을 시도해주세요.',
-      timestamp: new Date().toISOString(),
-      reconnectAfter: 5000 // 5초 후 재연결 권장
-    });
-    
-    // 모든 타이머 정리
-    for (const timer of this.clientReconnectTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.clientReconnectTimers.clear();
-    
-    for (const timeout of this.clientTimeouts.values()) {
-      clearTimeout(timeout);
-    }
-    this.clientTimeouts.clear();
-    
-    // Socket.IO 서버 정상 종료
-    if (this.io) {
-      this.io.close(() => {
-        console.log('[INFO] Socket.IO 서버 종료 완료');
+    try {
+      this.gracefulShutdown = true;
+      
+      // 모든 클라이언트에게 종료 알림
+      this.io.emit('server_shutdown', {
+        message: '서버가 종료됩니다.',
+        timestamp: new Date().toISOString()
       });
+      
+      // 잠시 대기 (클라이언트들이 알림을 받을 시간)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // 모든 연결 종료
+      this.io.close();
+      
+      console.log('[INFO] Socket.IO 서비스 정상 종료됨');
+    } catch (error) {
+      console.error('[ERROR] Socket.IO 서비스 종료 중 오류:', error);
     }
   }
 
@@ -588,6 +534,87 @@ class SocketService {
     // 첫 번째 실행 시작
     runOfflineCheck();
   }
+
+  // 강제 연결 해제 기능 추가
+  forceDisconnectClient(clientName) {
+    try {
+      const socket = this.connectedClients.get(clientName);
+      
+      if (socket) {
+        console.log(`[INFO] 클라이언트 강제 연결 해제: ${clientName} (Socket ID: ${socket.id})`);
+        
+        // 클라이언트에게 강제 해제 알림
+        socket.emit('force_disconnect', {
+          reason: 'server_force_disconnect',
+          message: '서버에서 연결을 강제로 해제했습니다.',
+          timestamp: new Date().toISOString()
+        });
+        
+        // 잠시 대기 후 소켓 연결 해제
+        setTimeout(() => {
+          socket.disconnect(true);
+          console.log(`[INFO] 클라이언트 소켓 연결 해제 완료: ${clientName}`);
+        }, 1000);
+        
+        return true;
+      } else {
+        console.log(`[WARN] 강제 해제할 클라이언트를 찾을 수 없음: ${clientName}`);
+        return false;
+      }
+    } catch (error) {
+      console.error(`[ERROR] 클라이언트 강제 연결 해제 실패 (${clientName}):`, error);
+      return false;
+    }
+  }
+
+  // 모든 클라이언트 강제 연결 해제
+  forceDisconnectAllClients() {
+    try {
+      const clientNames = Array.from(this.connectedClients.keys());
+      console.log(`[INFO] 모든 클라이언트 강제 연결 해제 시작: ${clientNames.length}개`);
+      
+      let successCount = 0;
+      clientNames.forEach(clientName => {
+        if (this.forceDisconnectClient(clientName)) {
+          successCount++;
+        }
+      });
+      
+      console.log(`[INFO] 강제 연결 해제 완료: ${successCount}/${clientNames.length}개 성공`);
+      return successCount;
+    } catch (error) {
+      console.error('[ERROR] 모든 클라이언트 강제 연결 해제 실패:', error);
+      return 0;
+    }
+  }
+
+  // 특정 IP의 클라이언트 강제 연결 해제
+  forceDisconnectByIP(ipAddress) {
+    try {
+      const targetClients = [];
+      
+      this.connectedClients.forEach((socket, clientName) => {
+        const clientIP = this.normalizeIP(socket.handshake.address);
+        if (clientIP === ipAddress) {
+          targetClients.push(clientName);
+        }
+      });
+      
+      console.log(`[INFO] IP ${ipAddress}의 클라이언트 강제 연결 해제: ${targetClients.length}개`);
+      
+      let successCount = 0;
+      targetClients.forEach(clientName => {
+        if (this.forceDisconnectClient(clientName)) {
+          successCount++;
+        }
+      });
+      
+      return successCount;
+    } catch (error) {
+      console.error(`[ERROR] IP ${ipAddress} 클라이언트 강제 연결 해제 실패:`, error);
+      return 0;
+    }
+  }
 }
 
-module.exports = new SocketService(); 
+module.exports = SocketService; 

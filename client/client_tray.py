@@ -406,9 +406,21 @@ try:
                     # 새로운 아이콘 이미지 생성
                     new_image = self.create_icon_image(icon_color)
                     
-                    # 기존 아이콘 교체
+                    # 기존 아이콘 교체 (강제 업데이트)
                     self.icon.icon = new_image
+                    
+                    # 트레이 아이콘 새로고침 (Windows에서 필요)
+                    try:
+                        self.icon.update_menu()
+                    except:
+                        pass
+                    
                     print("✅ [트레이 아이콘] 색상 업데이트 완료")
+                    print(f"🎨 [트레이 아이콘] 실제 색상: {icon_color}")
+                    
+                    # 추가 디버깅: 아이콘 객체 상태 확인
+                    print(f"🔍 [트레이 아이콘] 아이콘 객체: {self.icon}")
+                    print(f"🔍 [트레이 아이콘] 이미지 객체: {new_image}")
                     
                 except Exception as e:
                     print(f"❌ [트레이 아이콘] 업데이트 실패: {e}")
@@ -441,10 +453,24 @@ try:
             Socket.io 연결을 설정합니다.
             """
             try:
-                self.sio.connect(self.server_url)
+                print(f"🔌 Socket.io 연결 시도: {self.server_url}")
+                logging.info(f"Socket.io 연결 시도: {self.server_url}")
+                
+                # Python Socket.IO 클라이언트에 맞는 옵션 설정
+                # reconnection 관련 옵션 제거 (지원되지 않음)
+                self.sio.connect(
+                    self.server_url,
+                    transports=['websocket', 'polling'],
+                    wait_timeout=10
+                )
+                
                 self.running = True
+                print(f"✅ Socket.io 연결 설정 완료")
+                logging.info("Socket.io 연결 설정 완료")
                 return True
             except Exception as e:
+                print(f"❌ Socket.io 연결 실패: {e}")
+                logging.error(f"Socket.io 연결 실패: {e}")
                 return False
 
         def on_connect(self):
@@ -456,14 +482,39 @@ try:
             if hasattr(self, 'update_tray_icon'):
                 self.update_tray_icon()
             
-            # 클라이언트 등록
-            self.sio.emit('register_client', {
-                'name': self.client_name,
-                'clientType': 'python'
-            })
-            print(f"📝 클라이언트 등록 요청 전송: {self.client_name}")
+            # 클라이언트 등록 (지연 후 실행)
+            def register_after_delay():
+                try:
+                    time.sleep(2)  # 2초 대기 (서버 준비 시간)
+                    
+                    if self.sio.connected:
+                        registration_data = {
+                            'name': self.client_name,
+                            'clientType': 'python',
+                            'ip_address': self.get_cached_ip()
+                        }
+                        print(f"📝 클라이언트 등록 요청 준비: {self.client_name}")
+                        print(f"📝 등록 데이터: {registration_data}")
+                        
+                        self.sio.emit('register_client', registration_data)
+                        print(f"📝 클라이언트 등록 요청 전송 완료: {self.client_name}")
+                        logging.info(f"클라이언트 등록 요청 전송: {self.client_name}")
+                    else:
+                        print(f"⚠️ 소켓이 연결되지 않아 등록 요청을 보낼 수 없음")
+                        logging.warning("소켓이 연결되지 않아 등록 요청을 보낼 수 없음")
+                except Exception as e:
+                    print(f"❌ 클라이언트 등록 요청 실패: {e}")
+                    logging.error(f"클라이언트 등록 요청 실패: {e}")
+                    import traceback
+                    traceback.print_exc()
             
-            self.start_heartbeat()
+            # 별도 스레드에서 등록 요청 전송
+            import threading
+            register_thread = threading.Thread(target=register_after_delay, daemon=True)
+            register_thread.start()
+            
+            # 하트비트는 등록 성공 후에 시작 (타이밍 문제 해결)
+            # self.start_heartbeat()  # 즉시 시작하지 않음
         
         def send_current_process_status(self):
             """현재 실행 중인 프로세스 상태를 서버에 전송합니다."""
@@ -512,6 +563,10 @@ try:
             def heartbeat_loop():
                 print(f"💓 하트비트 루프 시작: {self.client_name}")
                 logging.info(f"하트비트 루프 시작: {self.client_name}")
+                
+                # 첫 번째 하트비트 전송 전에 3초 대기 (서버 준비 시간)
+                print(f"⏳ 첫 번째 하트비트 전송 전 3초 대기...")
+                time.sleep(3)
                 
                 while self.running:
                     try:
@@ -846,19 +901,26 @@ try:
             if event == 'connection_check':
                 print(f"🔍 [소켓 이벤트] connection_check 이벤트 감지!")
                 self.on_connection_check(data)
+            
+            # registration_success 이벤트 처리 (등록 성공 후 하트비트 시작)
+            elif event == 'registration_success':
+                print(f"✅ [소켓 이벤트] 클라이언트 등록 성공! 하트비트 시작")
+                logging.info("클라이언트 등록 성공 - 하트비트 시작")
+                self.start_heartbeat()
         
         def on_heartbeat_response(self, data):
             """하트비트 응답을 받았을 때 호출됩니다."""
             try:
-                status = data.get('status', '')
+                # 서버에서 보내는 필드명에 맞춰 수정
+                success = data.get('success', False)
                 message = data.get('message', '')
                 timestamp = data.get('timestamp', '')
                 
-                print(f"💚 [하트비트 응답] 수신: {status} - {message} (시간: {timestamp})")
-                logging.info(f"하트비트 응답 수신: {status} - {message}")
+                print(f"💚 [하트비트 응답] 수신: success={success} - {message} (시간: {timestamp})")
+                logging.info(f"하트비트 응답 수신: success={success} - {message}")
                 
                 # 하트비트 응답을 받으면 연결이 정상임을 확인하고 트레이 아이콘을 녹색으로 업데이트
-                if status == 'ok':
+                if success:
                     print(f"🟢 [하트비트 응답] 연결 상태 확인됨 - 트레이 아이콘 녹색으로 업데이트")
                     self.update_tray_icon()
                 else:

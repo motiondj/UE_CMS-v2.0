@@ -141,6 +141,23 @@ body {
     background: rgba(255,255,255,0.25);
 }
 
+.theme-toggle-btn {
+    background: rgba(255,255,255,0.15);
+    border: none;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s ease;
+    margin-left: 10px;
+}
+
+.theme-toggle-btn:hover {
+    background: rgba(255,255,255,0.25);
+    transform: scale(1.05);
+}
+
 .container {
     max-width: 1400px;
     margin: 0 auto;
@@ -180,6 +197,11 @@ body {
     font-size: 12px;
     color: var(--text-muted);
     font-weight: 400;
+}
+
+/* 통계바 실행 중 표시 스타일 */
+.stat-value span {
+  animation: pulse 2s infinite;
 }
 
 /* 📋 메인 레이아웃 */
@@ -1095,24 +1117,31 @@ textarea.form-input {
     background-color: var(--info-bg);
 }
 
+/* 실행 중인 프리셋 강조 스타일 */
 .preset-card.running {
-    border-color: #ef4444;
-    background-color: var(--error-bg);
-    animation: pulse-running 2s infinite;
+  border: 2px solid #22c55e;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.05) 0%, rgba(34, 197, 94, 0.1) 100%);
+  animation: pulse-running 2s infinite;
 }
 
 @keyframes pulse-running {
-    0% { box-shadow: 0 1px 3px var(--shadow-color); }
-    50% { box-shadow: 0 1px 3px var(--shadow-color), 0 0 0 3px rgba(239, 68, 68, 0.2); }
-    100% { box-shadow: 0 1px 3px var(--shadow-color); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
 }
 
 .running-indicator {
-    color: #ef4444;
-    font-weight: 600;
-    font-size: 12px;
-    margin-left: 8px;
-    animation: blink 1s infinite;
+  color: #22c55e;
+  font-weight: 600;
+  font-size: 12px;
+  margin-left: 8px;
+  animation: blink 1.5s infinite;
 }
 
 @keyframes blink {
@@ -1299,4 +1328,178 @@ textarea.form-input {
     padding: 4px 8px;
     font-size: 12px;
     border-radius: 3px;
+}
+
+/* 비활성화된 버튼 스타일 */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* 🎯 접근성 개선 - 포커스 스타일 */
+:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+button:focus,
+input:focus,
+textarea:focus,
+select:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 0;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* 카드 포커스 스타일 */
+.preset-card:focus,
+.group-card:focus,
+.client-item-card:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+/* 키보드 네비게이션 중인 카드 강조 */
+[data-focused="true"] {
+    background: var(--bg-tertiary);
+    border-color: #3b82f6;
+}
+
+/* 포커스 가시성 향상 */
+.focus-visible:focus {
+    outline: 3px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+/* 마우스 사용 시 포커스 제거 */
+.using-mouse :focus {
+    outline: none;
+}
+
+/* Skip to content 링크 */
+.skip-to-content {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: #3b82f6;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 0 0 4px 0;
+    text-decoration: none;
+    z-index: 9999;
+}
+
+.skip-to-content:focus {
+    top: 0;
+}
+
+/* 네비게이션 가능한 리스트 스타일 */
+.navigable-list {
+    outline: none;
+}
+
+.navigable-list:focus-within {
+    border-radius: 8px;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* 🎨 프리셋 실행 상태 시각화 개선 */
+/* 프리셋 실행 중 애니메이션 */
+.preset-card.running {
+    border: 2px solid #22c55e;
+    background: linear-gradient(
+        135deg, 
+        rgba(34, 197, 94, 0.05) 0%, 
+        rgba(34, 197, 94, 0.1) 100%
+    );
+    animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+    0% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+    }
+}
+
+/* 실행 진행률 바 */
+.preset-progress {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: rgba(34, 197, 94, 0.2);
+    border-radius: 6px 6px 0 0;
+    overflow: hidden;
+}
+
+.preset-progress-bar {
+    height: 100%;
+    background: #22c55e;
+    transition: width 0.3s ease;
+    animation: progress-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes progress-pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+/* 실행 중 인디케이터 */
+.running-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #22c55e;
+    font-weight: 600;
+    font-size: 12px;
+    margin-left: 8px;
+}
+
+.pulse-dot {
+    width: 8px;
+    height: 8px;
+    background: #22c55e;
+    border-radius: 50%;
+    animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0% {
+        transform: scale(1);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.2);
+        opacity: 0.7;
+    }
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* 시간 표시 스타일 */
+.time-ago {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.info-label {
+    font-weight: 600;
+    color: var(--text-secondary);
 } 

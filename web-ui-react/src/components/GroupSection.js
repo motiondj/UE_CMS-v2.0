@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, memo } from 'react';
 import GroupModal from './GroupModal';
 import './GroupSection.css';
 
-const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
+const GroupSection = memo(({ groups, clients, onRefresh, showToast }) => {
   const [selectedGroups, setSelectedGroups] = useState(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
@@ -259,6 +259,6 @@ const GroupSection = ({ groups, clients, onRefresh, showToast }) => {
       )}
     </div>
   );
-};
+});
 
 export default GroupSection; 

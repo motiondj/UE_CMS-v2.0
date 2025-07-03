@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, memo } from 'react';
+import NavigableList from './common/NavigableList';
 
-const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
+const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedPresets, setSelectedPresets] = useState(new Set());
   const [runningPresets, setRunningPresets] = useState(new Set()); // 실행 중인 프리셋 추적
-  const [presetStatuses, setPresetStatuses] = useState(new Map()); // 프리셋 상태 추적
   
   const [formData, setFormData] = useState({
     name: '',
@@ -16,51 +16,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
 
   const safeGroups = groups || [];
   
-  // 프리셋 상태 조회 함수
-  const fetchPresetStatus = async (presetId) => {
-    try {
-      console.log(`🔍 프리셋 상태 조회 시작: ID ${presetId}`);
-      const response = await fetch(`${apiBase}/api/presets/${presetId}/status`);
-      console.log(`📡 프리셋 상태 API 응답: ${response.status} ${response.statusText}`);
-      
-      if (response.ok) {
-        const statusData = await response.json();
-        console.log(`✅ 프리셋 상태 조회 성공:`, statusData);
-        setPresetStatuses(prev => {
-          const newMap = new Map(prev);
-          newMap.set(presetId, statusData);
-          return newMap;
-        });
-        return statusData;
-      } else {
-        console.error(`❌ 프리셋 상태 조회 실패: ${response.status} ${response.statusText}`);
-      }
-    } catch (error) {
-      console.error(`❌ 프리셋 상태 조회 오류: ${error.message}`);
-    }
-    return null;
-  };
 
-  // 모든 프리셋 상태 조회
-  const fetchAllPresetStatuses = async () => {
-    if (!presets || presets.length === 0) return;
-    
-    const statusPromises = presets.map(preset => fetchPresetStatus(preset.id));
-    await Promise.all(statusPromises);
-  };
-
-  // 클라이언트 상태 변경 시 프리셋 상태 자동 업데이트
-  useEffect(() => {
-    if (clients && clients.length > 0) {
-      // 클라이언트 상태가 변경되면 모든 프리셋 상태를 다시 조회
-      fetchAllPresetStatuses();
-    }
-  }, [clients]);
-
-  // 컴포넌트 마운트 시 프리셋 상태 조회
-  useEffect(() => {
-    fetchAllPresetStatuses();
-  }, [presets]);
 
   const resetForm = () => {
     setFormData({
@@ -216,8 +172,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
         showToast(`프리셋 "${preset.name}" 실행이 시작되었습니다.`, 'success');
       }
       
-      // 프리셋 실행 후 상태 다시 조회
-      await fetchPresetStatus(preset.id);
+
       
     } catch (error) {
       showToast(`프리셋 실행 실패: ${error.message}`, 'error');
@@ -253,8 +208,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
       
       showToast(`프리셋 "${preset.name}" 정지 요청이 전송되었습니다.`, 'info');
       
-      // 프리셋 정지 후 상태 다시 조회
-      await fetchPresetStatus(preset.id);
+
       
     } catch (error) {
       showToast(`프리셋 정지 실패: ${error.message}`, 'error');
@@ -298,25 +252,10 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
   const isAllSelected = (presets || []).length > 0 && selectedPresets.size === (presets || []).length;
   const selectedGroup = safeGroups.find(g => g.id === formData.target_group_id);
 
-  // 프리셋이 실행 중인지 확인하는 함수
+  // 프리셋 실행 상태 확인 함수
   const isPresetRunning = (preset) => {
-    if (!clients || !preset.target_group_id) return false;
-    
-    // 해당 그룹의 클라이언트들 중에서 현재 이 프리셋이 실행 중인 클라이언트가 있는지 확인
-    const groupClients = clients.filter(client => {
-      // 클라이언트가 어떤 그룹에 속하는지 확인
-      return groups.some(group => 
-        group.id === preset.target_group_id && 
-        group.clients && 
-        group.clients.some(gc => gc.id === client.id)
-      );
-    });
-    
-    // 현재 프리셋이 실행 중인 클라이언트가 있는지 확인
-    return groupClients.some(client => 
-      client.current_preset_id === preset.id && 
-      (client.status === 'running' || client.status === '콘텐츠 실행 중')
-    );
+    // 로컬 상태와 서버 상태 모두 확인
+    return runningPresets.has(preset.id) || preset.is_running === true;
   };
 
   return (
@@ -353,20 +292,61 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
           </div>
       </div>
 
-      <div className="preset-grid">
+      <NavigableList 
+        className="preset-grid"
+        onItemSelect={(index) => console.log('선택된 프리셋 인덱스:', index)}
+        onItemActivate={(index) => {
+          const preset = presets[index];
+          if (preset) {
+            const isRunning = isPresetRunning(preset);
+            if (isRunning) {
+              stopPreset(preset);
+            } else {
+              runPreset(preset);
+            }
+          }
+        }}
+      >
           {presets && presets.length > 0 ? (
               presets.map(preset => {
                   const group = safeGroups.find(g => g.id === preset.target_group_id);
                   const clientCount = group ? (group.clients || []).length : 0;
                   const isRunning = isPresetRunning(preset);
-                  const presetStatus = presetStatuses.get(preset.id);
+                  const runningClientCount = preset.running_client_ids ? preset.running_client_ids.length : 0;
+                  
+                  // 시간 포맷팅 함수
+                  const formatRelativeTime = (date) => {
+                    if (!date) return '실행한 적 없음';
+                    
+                    const now = new Date();
+                    const diff = now - date;
+                    const minutes = Math.floor(diff / 60000);
+                    const hours = Math.floor(minutes / 60);
+                    const days = Math.floor(hours / 24);
+                    
+                    if (minutes < 1) return '방금 전';
+                    if (minutes < 60) return `${minutes}분 전`;
+                    if (hours < 24) return `${hours}시간 전`;
+                    return `${days}일 전`;
+                  };
+
+                  const lastExecutedTime = preset.last_executed_at ? new Date(preset.last_executed_at) : null;
                   
                   return (
-                      <div key={preset.id} id={`preset-${preset.id}`} className={`preset-card ${isRunning ? 'running' : ''} ${presetStatus ? `status-${presetStatus.overallStatusCode}` : ''}`}>
+                      <div key={preset.id} className={`preset-card ${isRunning ? 'running' : ''}`}>
+                          {/* 실행 진행률 표시 */}
+                          {isRunning && (
+                              <div className="preset-progress">
+                                  <div 
+                                      className="preset-progress-bar" 
+                                      style={{ width: `${(runningClientCount / clientCount) * 100}%` }}
+                                  />
+                              </div>
+                          )}
+                          
                           <input 
                               type="checkbox" 
                               className="preset-checkbox" 
-                              data-preset-id={preset.id} 
                               checked={selectedPresets.has(preset.id)}
                               onChange={(e) => handleSelectPreset(preset.id, e.target.checked)}
                               onClick={(e) => e.stopPropagation()}
@@ -374,41 +354,29 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                           <div className="preset-content">
                               <div className="preset-card-header">
                                   <span className="preset-name">{preset.name}</span>
+                                  {isRunning && (
+                                      <span className="running-indicator">
+                                          <span className="pulse-dot"></span>
+                                          실행 중
+                                      </span>
+                                  )}
                               </div>
                               {preset.description && <div className="preset-info">{preset.description}</div>}
                               <div className="preset-info">그룹: {group ? group.name : '삭제된 그룹'}</div>
-                              <div className="preset-info">{clientCount}대 디스플레이 서버</div>
+                              <div className="preset-info">
+                                  <span className="info-label">클라이언트:</span> 
+                                  {isRunning 
+                                    ? `${runningClientCount}/${clientCount}대 실행 중` 
+                                    : `${clientCount}대`
+                                  }
+                              </div>
+                              <div className="preset-info">
+                                  <span className="info-label">마지막 실행:</span> 
+                                  <span className="time-ago">{formatRelativeTime(lastExecutedTime)}</span>
+                              </div>
                           </div>
                           <div className="preset-actions">
-                              {presetStatus && presetStatus.overallStatusCode === 'red' ? (
-                                  // 비정상 종료 상태: 실행 버튼 표시
-                                  <button 
-                                      className="btn btn-primary btn-bulk" 
-                                      onClick={() => runPreset(preset)} 
-                                      title="다시 실행"
-                                  >
-                                      실행
-                                  </button>
-                              ) : presetStatus && presetStatus.overallStatusCode === 'green' ? (
-                                  // 실행 중 상태: 정지 버튼 표시
-                                  <button 
-                                      className="btn btn-danger btn-bulk" 
-                                      onClick={() => stopPreset(preset)} 
-                                      title="정지"
-                                  >
-                                      정지
-                                  </button>
-                              ) : presetStatus && presetStatus.overallStatusCode === 'yellow' ? (
-                                  // 준비 불완전 상태: 실행 버튼 비활성화
-                                  <button 
-                                      className="btn btn-secondary btn-bulk" 
-                                      disabled
-                                      title="오프라인 클라이언트가 있어 실행할 수 없습니다"
-                                  >
-                                      실행불가
-                                  </button>
-                              ) : isRunning ? (
-                                  // 기존 로직 (상태 정보가 없는 경우)
+                              {isRunning ? (
                                   <button 
                                       className="btn btn-danger btn-bulk" 
                                       onClick={() => stopPreset(preset)} 
@@ -417,17 +385,31 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                                       정지
                                   </button>
                               ) : (
-                                  // 기본 실행 버튼
                                   <button 
                                       className="btn btn-primary btn-bulk" 
                                       onClick={() => runPreset(preset)} 
                                       title="실행"
+                                      disabled={clientCount === 0}
                                   >
                                       실행
                                   </button>
                               )}
-                              <button className="btn btn-secondary btn-bulk" onClick={() => openEditModal(preset)} title="편집">편집</button>
-                              <button className="btn btn-danger btn-bulk" onClick={() => deletePreset(preset.id)} title="삭제">삭제</button>
+                              <button 
+                                  className="btn btn-secondary btn-bulk" 
+                                  onClick={() => openEditModal(preset)} 
+                                  title="편집"
+                                  disabled={isRunning}
+                              >
+                                  편집
+                              </button>
+                              <button 
+                                  className="btn btn-danger btn-bulk" 
+                                  onClick={() => deletePreset(preset.id)} 
+                                  title="삭제"
+                                  disabled={isRunning}
+                              >
+                                  삭제
+                              </button>
                           </div>
                       </div>
                   );
@@ -439,7 +421,7 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
                   <div className="empty-state-description">새 프리셋 버튼을 클릭해서 첫 번째 프리셋을 만들어보세요!</div>
               </div>
           )}
-      </div>
+      </NavigableList>
 
     {showModal && (
       <div className="modal show" onClick={closeModal}>
@@ -552,6 +534,6 @@ const PresetSection = ({ presets, groups, clients, apiBase, showToast }) => {
     )}
   </div>
 );
-};
+});
 
 export default PresetSection; 

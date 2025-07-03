@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
 
@@ -9,12 +9,7 @@ const ClientDetailModal = ({ client, onClose, onClientUpdated }) => {
   const [isEditingMac, setIsEditingMac] = useState(false);
   const [savingMac, setSavingMac] = useState(false);
 
-  useEffect(() => {
-    loadExecutionHistory();
-    loadMacAddress();
-  }, [client.id, client.mac_address]);
-
-  const loadExecutionHistory = async () => {
+  const loadExecutionHistory = useCallback(async () => {
     try {
       setLoading(true);
       const response = await fetch(`${API_BASE}/api/execution-history?client_id=${client.id}`);
@@ -27,9 +22,9 @@ const ClientDetailModal = ({ client, onClose, onClientUpdated }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [client.id]);
 
-  const loadMacAddress = async () => {
+  const loadMacAddress = useCallback(async () => {
     // MAC 주소가 없으면 API에서 직접 조회
     if (!client.mac_address) {
       try {
@@ -53,7 +48,12 @@ const ClientDetailModal = ({ client, onClose, onClientUpdated }) => {
       console.log('✅ 기존 MAC 주소 사용:', client.mac_address);
       setMacAddress(client.mac_address);
     }
-  };
+  }, [client.id, client.mac_address, client.name]);
+
+  useEffect(() => {
+    loadExecutionHistory();
+    loadMacAddress();
+  }, [loadExecutionHistory, loadMacAddress]);
 
   const saveMacAddress = async () => {
     if (!macAddress.trim()) {

@@ -1,7 +1,7 @@
 import React from 'react';
 import './Header.css';
 
-const Header = ({ onRefresh, isConnected, serverStatus }) => {
+const Header = ({ isConnected, serverStatus, isDarkMode, toggleDarkMode }) => {
   return (
     <header className="header">
       <div className="header-content">
@@ -19,8 +19,8 @@ const Header = ({ onRefresh, isConnected, serverStatus }) => {
               Server: {serverStatus === 'running' ? 'Running' : 'Stopped'}
             </div>
           </div>
-          <button className="refresh-btn" onClick={onRefresh}>
-            🔄 Refresh
+          <button className="theme-toggle-btn" onClick={toggleDarkMode}>
+            {isDarkMode ? '☀️' : '🌙'}
           </button>
         </div>
       </div>
