@@ -27,4 +27,7 @@ router.put('/:id/mac-address', asyncHandler(ClientController.updateMacAddress));
 // 하트비트
 router.post('/heartbeat', asyncHandler(ClientController.heartbeat));
 
+// 연결된 클라이언트 정보 조회
+router.get('/connected', asyncHandler(ClientController.getConnectedClients));
+
 module.exports = router; 

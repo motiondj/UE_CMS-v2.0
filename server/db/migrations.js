@@ -100,10 +100,12 @@ const additionalMigrations = [
   // 기존 테이블에 컬럼 추가
   `ALTER TABLE clients ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
   `ALTER TABLE clients ADD COLUMN status_changed_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
+  `ALTER TABLE presets ADD COLUMN last_executed_at DATETIME`,
   
   // 추가 인덱스들
   `CREATE INDEX IF NOT EXISTS idx_clients_updated_at ON clients(updated_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_clients_status_changed_at ON clients(status_changed_at)`
+  `CREATE INDEX IF NOT EXISTS idx_clients_status_changed_at ON clients(status_changed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_presets_last_executed ON presets(last_executed_at)`
 ];
 
 async function runMigrations() {

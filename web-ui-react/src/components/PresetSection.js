@@ -135,15 +135,22 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
   
   const runPreset = async (preset) => {
     try {
+      console.log(`[DEBUG] 프리셋 실행 시작: ID ${preset.id}, 이름: ${preset.name}`);
+      
       // 실행 중 상태로 설정
       setRunningPresets(prev => new Set([...prev, preset.id]));
       
-      const response = await fetch(`${apiBase}/api/presets/${preset.id}/execute`, {
+      const url = `${apiBase}/api/presets/${preset.id}/execute`;
+      console.log(`[DEBUG] API 호출 URL: ${url}`);
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         }
       });
+      
+      console.log(`[DEBUG] API 응답 상태: ${response.status} ${response.statusText}`);
       
       if (!response.ok) {
         const data = await response.json();
@@ -312,25 +319,6 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
                   const group = safeGroups.find(g => g.id === preset.target_group_id);
                   const clientCount = group ? (group.clients || []).length : 0;
                   const isRunning = isPresetRunning(preset);
-                  const runningClientCount = preset.running_client_ids ? preset.running_client_ids.length : 0;
-                  
-                  // 시간 포맷팅 함수
-                  const formatRelativeTime = (date) => {
-                    if (!date) return '실행한 적 없음';
-                    
-                    const now = new Date();
-                    const diff = now - date;
-                    const minutes = Math.floor(diff / 60000);
-                    const hours = Math.floor(minutes / 60);
-                    const days = Math.floor(hours / 24);
-                    
-                    if (minutes < 1) return '방금 전';
-                    if (minutes < 60) return `${minutes}분 전`;
-                    if (hours < 24) return `${hours}시간 전`;
-                    return `${days}일 전`;
-                  };
-
-                  const lastExecutedTime = preset.last_executed_at ? new Date(preset.last_executed_at) : null;
                   
                   return (
                       <div key={preset.id} className={`preset-card ${isRunning ? 'running' : ''}`}>
@@ -339,7 +327,7 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
                               <div className="preset-progress">
                                   <div 
                                       className="preset-progress-bar" 
-                                      style={{ width: `${(runningClientCount / clientCount) * 100}%` }}
+                                      style={{ width: '100%' }}
                                   />
                               </div>
                           )}
@@ -365,21 +353,17 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
                               <div className="preset-info">그룹: {group ? group.name : '삭제된 그룹'}</div>
                               <div className="preset-info">
                                   <span className="info-label">클라이언트:</span> 
-                                  {isRunning 
-                                    ? `${runningClientCount}/${clientCount}대 실행 중` 
-                                    : `${clientCount}대`
-                                  }
-                              </div>
-                              <div className="preset-info">
-                                  <span className="info-label">마지막 실행:</span> 
-                                  <span className="time-ago">{formatRelativeTime(lastExecutedTime)}</span>
+                                  <span>{clientCount}대</span>
                               </div>
                           </div>
                           <div className="preset-actions">
                               {isRunning ? (
                                   <button 
                                       className="btn btn-danger btn-bulk" 
-                                      onClick={() => stopPreset(preset)} 
+                                      onClick={(e) => {
+                                          e.stopPropagation();
+                                          stopPreset(preset);
+                                      }} 
                                       title="정지"
                                   >
                                       정지
@@ -387,7 +371,10 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
                               ) : (
                                   <button 
                                       className="btn btn-primary btn-bulk" 
-                                      onClick={() => runPreset(preset)} 
+                                      onClick={(e) => {
+                                          e.stopPropagation();
+                                          runPreset(preset);
+                                      }} 
                                       title="실행"
                                       disabled={clientCount === 0}
                                   >

@@ -201,6 +201,37 @@ class ClientController {
       next(error);
     }
   }
+
+  // 연결된 클라이언트 정보 조회
+  static async getConnectedClients(req, res, next) {
+    try {
+      const connectedClients = socketService.getConnectedClients();
+      const allClients = await ClientModel.findAll();
+      
+      // 각 클라이언트의 연결 상태 확인
+      const clientsWithConnectionStatus = allClients.map(client => {
+        const isConnected = socketService.isClientConnected(client.name);
+        const socket = socketService.connectedClients.get(client.name);
+        
+        return {
+          ...client,
+          isConnected: isConnected,
+          socketId: socket ? socket.id : null,
+          socketConnected: socket ? socket.connected : false,
+          lastSeen: socket ? socket.handshake.time : null
+        };
+      });
+      
+      res.json({
+        connectedClients: connectedClients,
+        totalClients: allClients.length,
+        clients: clientsWithConnectionStatus
+      });
+    } catch (error) {
+      logger.error('연결된 클라이언트 조회 실패:', error);
+      next(error);
+    }
+  }
 }
 
 module.exports = ClientController; 

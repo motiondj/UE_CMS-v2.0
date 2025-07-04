@@ -88,6 +88,9 @@ class SocketService {
     socket.on('execution_result', (data) => this.handleExecutionResult(socket, data));
     socket.on('stop_result', (data) => this.handleStopResult(socket, data));
     
+    // 클라이언트 상태 업데이트
+    socket.on('client_status_update', (data) => this.handleClientStatusUpdate(socket, data));
+    
     // 연결 확인 응답
     socket.on('connection_check_response', (data) => {
       this.handleConnectionCheckResponse(socket, data);
@@ -126,29 +129,38 @@ class SocketService {
       const { name, clientType = 'python', ip_address } = data;
       const clientIP = ip_address || this.normalizeIP(socket.handshake.address || '127.0.0.1');
       
+      // 클라이언트 이름 정규화 (대문자로 통일)
+      const normalizedName = name ? name.toUpperCase() : name;
+      
       socket.clientType = clientType;
-      socket.clientName = name;
+      socket.clientName = normalizedName;
       
       // 기존 클라이언트 찾기
       let client = await ClientModel.findByIP(clientIP);
       
       if (client) {
-        socket.clientName = client.name;
-        console.log(`[INFO] 기존 클라이언트 발견: ${client.name} (ID: ${client.id})`);
+        // 기존 클라이언트 이름도 정규화
+        const existingNormalizedName = client.name ? client.name.toUpperCase() : client.name;
+        socket.clientName = existingNormalizedName;
+        console.log(`[INFO] 기존 클라이언트 발견: ${existingNormalizedName} (ID: ${client.id})`);
       } else {
-        // 새 클라이언트 등록
-        client = await ClientModel.create({ name, ip_address: clientIP });
-        console.log(`[INFO] 새 클라이언트 등록: ${name} (ID: ${client.id})`);
+        // 새 클라이언트 등록 (정규화된 이름 사용)
+        client = await ClientModel.create({ name: normalizedName, ip_address: clientIP });
+        console.log(`[INFO] 새 클라이언트 등록: ${normalizedName} (ID: ${client.id})`);
       }
       
-      // 소켓 연결 관리
-      this.registerSocket(client.name, socket);
+      // 소켓 연결 관리 (정규화된 이름 사용)
+      const finalClientName = client.name ? client.name.toUpperCase() : client.name;
+      console.log(`[DEBUG] 소켓 등록 시작: ${finalClientName}`);
+      this.registerSocket(finalClientName, socket);
+      console.log(`[DEBUG] 소켓 등록 완료: ${finalClientName}`);
+      console.log(`[DEBUG] 등록 후 연결된 클라이언트: ${Array.from(this.connectedClients.keys())}`);
       
       // 상태 업데이트
       await ClientModel.updateStatus(client.id, 'online');
       this.emit('client_status_changed', { 
         client_id: client.id, // client_id로 통일
-        name: client.name,    // name도 함께 전송
+        name: finalClientName,    // 정규화된 이름 사용
         status: 'online' 
       });
       
@@ -172,16 +184,19 @@ class SocketService {
 
   async handleHeartbeat(socket, data) {
     try {
-      const { clientName } = data;
+      const { clientName, ip_address } = data;
       
       if (!clientName) {
         console.log(`[WARN] 하트비트에 클라이언트 이름이 없음: ${socket.id}`);
         return;
       }
       
-      // 하트비트 서비스에 전달
+      // 클라이언트 이름 정규화
+      const normalizedClientName = clientName.toUpperCase();
+      
+      // 하트비트 서비스에 전달 (IP 주소 포함)
       const heartbeatService = require('./heartbeatService');
-      await heartbeatService.receiveHeartbeat(clientName);
+      await heartbeatService.receiveHeartbeat(normalizedClientName, ip_address);
       
       // 클라이언트에게 응답
       socket.emit('heartbeat_response', {
@@ -270,6 +285,33 @@ class SocketService {
           reason: '명령 중지 완료'
         });
       }
+    }
+  }
+
+  async handleClientStatusUpdate(socket, data) {
+    try {
+      const { clientName, status, timestamp } = data;
+      console.log(`[INFO] 클라이언트 상태 업데이트 수신: ${clientName} -> ${status} - ${timestamp}`);
+      
+      // 클라이언트 찾기
+      const client = await ClientModel.findByName(clientName);
+      if (client) {
+        // 상태 업데이트
+        await ClientModel.updateStatus(client.id, status);
+        
+        // 상태 변경 이벤트 전송
+        this.emit('client_status_changed', { 
+          client_id: client.id,
+          name: client.name,
+          status: status 
+        });
+        
+        console.log(`[INFO] 클라이언트 상태 업데이트 완료: ${clientName} -> ${status}`);
+      } else {
+        console.log(`[WARN] 클라이언트를 찾을 수 없음: ${clientName}`);
+      }
+    } catch (error) {
+      console.log(`[ERROR] 클라이언트 상태 업데이트 처리 중 오류:`, error);
     }
   }
 
@@ -435,16 +477,25 @@ class SocketService {
 
   emitToClient(clientName, event, data) {
     console.log(`[DEBUG] emitToClient 호출: ${clientName}, 이벤트: ${event}`);
+    console.log(`[DEBUG] 현재 연결된 클라이언트: ${Array.from(this.connectedClients.keys())}`);
     
     const socket = this.connectedClients.get(clientName);
     console.log(`[DEBUG] 소켓 찾기 결과: ${clientName} - ${socket ? '찾음' : '없음'}`);
     
-    if (socket && socket.connected) {
-      console.log(`[DEBUG] 명령 전송: ${clientName} (Socket ID: ${socket.id})`);
-      socket.emit(event, data);
-      return true;
+    if (socket) {
+      console.log(`[DEBUG] 소켓 상태: ${clientName} - Socket ID: ${socket.id}, Connected: ${socket.connected}`);
+      
+      if (socket.connected) {
+        console.log(`[DEBUG] 명령 전송: ${clientName} (Socket ID: ${socket.id})`);
+        console.log(`[DEBUG] 전송 데이터: ${JSON.stringify(data)}`);
+        socket.emit(event, data);
+        return true;
+      } else {
+        console.log(`[DEBUG] 명령 전송 실패: ${clientName} - 소켓 연결 안됨`);
+        return false;
+      }
     } else {
-      console.log(`[DEBUG] 명령 전송 실패: ${clientName} - 소켓 없음 또는 연결 안됨`);
+      console.log(`[DEBUG] 명령 전송 실패: ${clientName} - 소켓 없음`);
       return false;
     }
   }
@@ -456,6 +507,17 @@ class SocketService {
   isClientConnected(clientName) {
     const socket = this.connectedClients.get(clientName);
     return socket && socket.connected;
+  }
+
+  // IP 주소로 연결된 클라이언트 이름 찾기
+  findClientByIP(ipAddress) {
+    for (const [clientName, socket] of this.connectedClients) {
+      const clientIP = this.normalizeIP(socket.handshake.address);
+      if (clientIP === ipAddress) {
+        return clientName;
+      }
+    }
+    return null;
   }
 
   // 주기적인 상태 확인 (문서 2.5 정확히 따름)

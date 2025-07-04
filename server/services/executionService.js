@@ -8,6 +8,7 @@ class ExecutionService {
   // 프리셋 실행
   static async executePreset(presetId) {
     logger.info(`프리셋 실행 시작: ID ${presetId}`);
+    console.log(`[DEBUG] executePreset 호출됨: ID ${presetId}`);
     
     // 프리셋 정보 조회
     const preset = await PresetModel.findById(presetId);
@@ -29,17 +30,34 @@ class ExecutionService {
     
     // 각 클라이언트에 명령 전송
     for (const client of clients) {
-      const command = preset.client_commands[client.id] || preset.client_commands[client.name];
+      // 클라이언트 이름 정규화
+      const normalizedClientName = client.name ? client.name.toUpperCase() : client.name;
+      console.log(`[DEBUG] 클라이언트 처리 시작: ${normalizedClientName} (ID: ${client.id}, IP: ${client.ip_address}, 상태: ${client.status})`);
+      
+      // 명령어 찾기 (ID, 원본 이름, 정규화된 이름 순서로)
+      const command = preset.client_commands[client.id] || preset.client_commands[client.name] || preset.client_commands[normalizedClientName];
       
       if (!command) {
-        warnings.push(`클라이언트 ${client.name}에 대한 명령어가 설정되지 않았습니다.`);
+        console.log(`[DEBUG] 클라이언트 ${normalizedClientName} (IP: ${client.ip_address})에 대한 명령어가 설정되지 않음`);
+        warnings.push(`클라이언트 ${normalizedClientName}에 대한 명령어가 설정되지 않았습니다.`);
         continue;
       }
       
-      console.log(`[DEBUG] 클라이언트 ${client.name}에 명령 전송 시도: ${command.substring(0, 50)}...`);
+      console.log(`[DEBUG] 클라이언트 ${normalizedClientName} (IP: ${client.ip_address})에 명령 전송 시도: ${command.substring(0, 50)}...`);
+      console.log(`[DEBUG] 프리셋 명령어 맵: ${JSON.stringify(preset.client_commands)}`);
       
-      const sent = socketService.emitToClient(client.name, 'execute_command', {
-        clientName: client.name,
+      // IP 주소로 연결된 클라이언트 찾기 (더 안정적)
+      const connectedClientName = socketService.findClientByIP(client.ip_address);
+      const targetClientName = connectedClientName || client.name; // 원본 이름 사용
+      
+      console.log(`[DEBUG] IP ${client.ip_address}로 연결된 클라이언트: ${connectedClientName || '없음'}`);
+      console.log(`[DEBUG] 최종 대상 클라이언트 이름: ${targetClientName}`);
+      
+      // 클라이언트 이름을 대문자로 정규화하여 전송 (서버 내부에서 대문자로 관리)
+      const sendClientName = targetClientName.toUpperCase();
+      
+      const sent = socketService.emitToClient(sendClientName, 'execute_command', {
+        clientName: sendClientName,
         command: command,
         presetId: preset.id
       });
@@ -61,14 +79,17 @@ class ExecutionService {
         
         executionResults.push({
           clientId: client.id,
-          clientName: client.name,
+          clientName: normalizedClientName,
           status: 'running'
         });
       } else {
-        warnings.push(`클라이언트 ${client.name}가 연결되지 않았습니다.`);
+        warnings.push(`클라이언트 ${normalizedClientName}가 연결되지 않았습니다.`);
         await PresetModel.addExecutionHistory(preset.id, client.id, 'failed_offline');
       }
     }
+    
+    // 프리셋의 마지막 실행 시간 업데이트
+    await PresetModel.updateLastExecuted(preset.id);
     
     // Socket.IO 이벤트 전송
     socketService.emit('preset_executed', {
@@ -108,8 +129,11 @@ class ExecutionService {
     
     // 각 클라이언트에 정지 명령 전송
     for (const client of clients) {
-      const sent = socketService.emitToClient(client.name, 'stop_command', {
-        clientName: client.name,
+      // 클라이언트 이름을 대문자로 정규화하여 전송 (서버 내부에서 대문자로 관리)
+      const sendClientName = client.name.toUpperCase();
+      
+      const sent = socketService.emitToClient(sendClientName, 'stop_command', {
+        clientName: sendClientName,
         presetId: preset.id
       });
       

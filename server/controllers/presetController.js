@@ -101,11 +101,16 @@ class PresetController {
     try {
       const { id } = req.params;
       
+      console.log(`[DEBUG] 프리셋 실행 API 호출됨: ID ${id}`);
+      logger.info(`프리셋 실행 API 호출됨: ID ${id}`);
+      
       const result = await ExecutionService.executePreset(id);
       
+      console.log(`[DEBUG] 프리셋 실행 완료: ID ${id}, 결과:`, result);
       logger.info(`프리셋 실행: ID ${id}, 성공 ${result.summary.successful}개, 실패 ${result.summary.failed}개`);
       res.json(result);
     } catch (error) {
+      console.log(`[DEBUG] 프리셋 실행 오류: ID ${id}, 오류:`, error.message);
       if (error.message === '프리셋을 찾을 수 없습니다.') {
         return res.status(404).json({ error: error.message });
       }

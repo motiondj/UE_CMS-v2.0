@@ -257,11 +257,14 @@ function App() {
           : c
       ));
       
-      // 상태 변경 알림
+      // 상태 변경 알림 (오프라인 → 온라인일 때만 표시, 프리셋 실행 중에는 억제)
       const clientName = data.name || prevClient?.name || '알 수 없음';
-      if (data.status === 'online') {
+      const isComingOnline = data.status === 'online' && prevClient?.status === 'offline';
+      const isGoingOffline = data.status === 'offline' && prevClient?.status === 'online';
+      
+      if (isComingOnline) {
         showToast(`🟢 ${clientName} 온라인`, 'success');
-      } else if (data.status === 'offline') {
+      } else if (isGoingOffline) {
         showToast(`🔴 ${clientName} 오프라인`, 'warning');
       }
     });

@@ -100,6 +100,14 @@ class PresetModel {
       [presetId, clientId, status]
     );
   }
+
+  // 프리셋 마지막 실행 시간 업데이트
+  static async updateLastExecuted(presetId) {
+    await db.run(
+      'UPDATE presets SET last_executed_at = datetime("now") WHERE id = ?',
+      [presetId]
+    );
+  }
 }
 
 module.exports = PresetModel; 

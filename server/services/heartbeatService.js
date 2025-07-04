@@ -39,13 +39,18 @@ class HeartbeatService {
     logger.info('⏹️ 하트비트 서비스 중지됨');
   }
 
-  async receiveHeartbeat(clientName) {
+  async receiveHeartbeat(clientName, ipAddress) {
     try {
-      // 클라이언트 이름으로 클라이언트 찾기
-      const client = await ClientModel.findByName(clientName);
+      // IP 주소를 우선으로 클라이언트 찾기 (더 안정적)
+      let client = await ClientModel.findByIP(ipAddress);
+      
+      // IP로 찾지 못한 경우에만 이름으로 찾기
+      if (!client) {
+        client = await ClientModel.findByName(clientName);
+      }
       
       if (!client) {
-        logger.warn(`하트비트 수신: 클라이언트를 찾을 수 없음 - ${clientName}`);
+        logger.warn(`하트비트 수신: 클라이언트를 찾을 수 없음 - ${clientName} (IP: ${ipAddress})`);
         return;
       }
       

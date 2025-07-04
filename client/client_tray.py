@@ -613,7 +613,10 @@ try:
                 # 두 가지 필드명 모두 처리
                 client_name = data.get('client_name', '') or data.get('clientName', '')
                 
-                if client_name != self.client_name:
+                # 클라이언트 이름으로 대상 확인 (대소문자 구분 없이)
+                if client_name and client_name.upper() != self.client_name.upper():
+                    print(f"❌ 클라이언트 이름 불일치: {client_name} != {self.client_name}")
+                    logging.info(f"클라이언트 이름 불일치로 명령 무시: {client_name} != {self.client_name}")
                     return  # 다른 클라이언트용 명령이면 무시
                 
                 print(f"📋 명령 실행 요청: {command}")
@@ -664,7 +667,9 @@ try:
                 # 빈 문자열이거나 현재 클라이언트 이름과 다른 경우 처리
                 if not client_name:
                     client_name = self.client_name  # 빈 문자열이면 현재 클라이언트로 처리
-                elif client_name != self.client_name:
+                elif client_name.upper() != self.client_name.upper():
+                    print(f"❌ 클라이언트 이름 불일치: {client_name} != {self.client_name}")
+                    logging.info(f"클라이언트 이름 불일치로 연결 확인 무시: {client_name} != {self.client_name}")
                     return  # 다른 클라이언트용 요청이면 무시
                 
                 # 연결 확인 응답
@@ -692,7 +697,10 @@ try:
                 # 두 가지 필드명 모두 처리
                 client_name = data.get('client_name', '') or data.get('clientName', '')
                 
-                if client_name != self.client_name:
+                # 클라이언트 이름으로 대상 확인 (대소문자 구분 없이)
+                if client_name and client_name.upper() != self.client_name.upper():
+                    print(f"❌ 클라이언트 이름 불일치: {client_name} != {self.client_name}")
+                    logging.info(f"클라이언트 이름 불일치로 정지 명령 무시: {client_name} != {self.client_name}")
                     return  # 다른 클라이언트용 명령이면 무시
                 
                 print(f"🛑 정지 명령 수신: {self.client_name}")
@@ -771,66 +779,71 @@ try:
             
             for process_name, process_info in self.running_processes.items():
                 try:
-                    pid = process_info['pid']
-                    proc = psutil.Process(pid)
-                    
-                    if proc.is_running():
-                        # 프로세스 종료
-                        proc.terminate()
-                        
-                        # 5초 대기 후 강제 종료
-                        try:
-                            proc.wait(timeout=5)
-                            print(f"✅ 프로세스 정지 완료: {process_name} (PID: {pid})")
-                        except psutil.TimeoutExpired:
-                            proc.kill()
-                            print(f"⚠️ 프로세스 강제 종료: {process_name} (PID: {pid})")
-                    
-                except psutil.NoSuchProcess:
-                    print(f"⚠️ 프로세스가 이미 종료됨: {process_name} (PID: {pid})")
+                    print(f"🔧 taskkill 명령어로 강제 종료 시도: {process_name}")
+                    result = subprocess.run(
+                        ['taskkill', '/F', '/IM', process_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode == 0:
+                        print(f"✅ taskkill로 프로세스 종료 성공: {process_name}")
+                    else:
+                        print(f"❌ taskkill 실패: {process_name} - {result.stderr}")
                 except Exception as e:
-                    print(f"❌ 프로세스 정지 중 오류: {process_name} - {e}")
+                    print(f"❌ taskkill 실행 중 오류: {e}")
             
             # 프로세스 목록 초기화
             self.running_processes.clear()
             print("✅ 모든 프로세스 정지 완료")
+            
+            # 상태를 online으로 되돌리기
+            if self.sio.connected:
+                self.sio.emit('client_status_update', {
+                    'clientName': self.client_name,
+                    'status': 'online',
+                    'timestamp': datetime.now().isoformat()
+                })
+                print(f"🔄 클라이언트 상태를 'online'으로 변경: {self.client_name}")
         
         def execute_command(self, command):
             """명령을 실행합니다."""
             try:
                 logging.info(f"명령 실행: {command}")
                 
-                # 시스템 명령 실행
+                # 프로세스 이름 추출
+                process_name = self.extract_process_name(command)
+                
+                # 백그라운드에서 실행 (communicate() 호출하지 않음)
                 process = subprocess.Popen(
                     command,
                     shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     text=True
                 )
                 
-                stdout, stderr = process.communicate(timeout=30)
-                
                 # 실행된 프로세스 정보 저장
-                process_name = self.extract_process_name(command)
                 if process_name:
                     self.add_running_process(process_name, process.pid, command)
+                    print(f"✅ 프로세스 시작됨: {process_name} (PID: {process.pid})")
+                    
+                    # 클라이언트 상태를 running으로 변경
+                    if self.sio.connected:
+                        self.sio.emit('client_status_update', {
+                            'clientName': self.client_name,
+                            'status': 'running',
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        print(f"🔄 클라이언트 상태를 'running'으로 변경: {self.client_name}")
                 
                 return {
-                    'success': process.returncode == 0,
-                    'stdout': stdout,
-                    'stderr': stderr,
-                    'returncode': process.returncode,
+                    'success': True,
+                    'pid': process.pid,
+                    'process_name': process_name,
                     'timestamp': datetime.now().isoformat()
                 }
                 
-            except subprocess.TimeoutExpired:
-                process.kill()
-                return {
-                    'success': False,
-                    'error': '명령 실행 시간 초과',
-                    'timestamp': datetime.now().isoformat()
-                }
             except Exception as e:
                 logging.error(f"명령 실행 실패: {e}")
                 return {
@@ -897,8 +910,15 @@ try:
             print(f"📡 [소켓 이벤트] 수신: {event} - 데이터: {data}")
             logging.info(f"소켓 이벤트 수신: {event} - 데이터: {data}")
             
+            # execute_command 이벤트가 수신되면 특별히 로깅
+            if event == 'execute_command':
+                print(f"🚨 [중요] execute_command 이벤트 수신됨!")
+                logging.info(f"[중요] execute_command 이벤트 수신됨!")
+                # 즉시 명령 실행
+                self.on_execute_command(data)
+            
             # connection_check 이벤트를 특별히 처리
-            if event == 'connection_check':
+            elif event == 'connection_check':
                 print(f"🔍 [소켓 이벤트] connection_check 이벤트 감지!")
                 self.on_connection_check(data)
             
