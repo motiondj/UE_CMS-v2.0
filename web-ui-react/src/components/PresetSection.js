@@ -1,11 +1,11 @@
 import React, { useState, memo } from 'react';
 import NavigableList from './common/NavigableList';
+import apiClient from '../utils/apiClient';
 
 const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingPreset, setEditingPreset] = useState(null);
   const [selectedPresets, setSelectedPresets] = useState(new Set());
-  const [runningPresets, setRunningPresets] = useState(new Set()); // 실행 중인 프리셋 추적
   
   const [formData, setFormData] = useState({
     name: '',
@@ -95,20 +95,13 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
     }
 
     const isEditing = !!editingPreset;
-    const url = `${apiBase}/api/presets` + (isEditing ? `/${editingPreset.id}` : '');
-    const method = isEditing ? 'PUT' : 'POST';
 
     try {
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || `프리셋 ${isEditing ? '수정' : '생성'} 실패`);
+      let result;
+      if (isEditing) {
+        result = await apiClient.put(`/api/presets/${editingPreset.id}`, formData);
+      } else {
+        result = await apiClient.post('/api/presets', formData);
       }
       
       showToast(`프리셋 "${result.name}"이(가) 성공적으로 ${isEditing ? '수정' : '생성'}되었습니다.`, 'success');
@@ -121,11 +114,7 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
   const deletePreset = async (presetId) => {
     if (window.confirm('정말 이 프리셋을 삭제하시겠습니까?')) {
       try {
-        const response = await fetch(`${apiBase}/api/presets/${presetId}`, { method: 'DELETE' });
-        if (!response.ok) {
-            const data = await response.json();
-          throw new Error(data.error || '프리셋 삭제 실패');
-        }
+        await apiClient.delete(`/api/presets/${presetId}`);
         showToast('프리셋이 성공적으로 삭제되었습니다.', 'success');
       } catch (error) {
         showToast(error.message, 'error');
@@ -137,27 +126,9 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
     try {
       console.log(`[DEBUG] 프리셋 실행 시작: ID ${preset.id}, 이름: ${preset.name}`);
       
-      // 실행 중 상태로 설정
-      setRunningPresets(prev => new Set([...prev, preset.id]));
+      const result = await apiClient.post(`/api/presets/${preset.id}/execute`);
       
-      const url = `${apiBase}/api/presets/${preset.id}/execute`;
-      console.log(`[DEBUG] API 호출 URL: ${url}`);
-      
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      console.log(`[DEBUG] API 응답 상태: ${response.status} ${response.statusText}`);
-      
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || '프리셋 실행 실패');
-      }
-      
-      const result = await response.json();
+      console.log(`[DEBUG] 프리셋 실행 완료:`, result);
       
       // 실행 결과 토스트 표시
       if (result.warning) {
@@ -173,49 +144,23 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
       // 실행 요약 토스트
       const summary = result.summary;
       if (summary) {
-        const message = `프리셋 "${preset.name}" 실행 완료: ${summary.executed}/${summary.total}개 클라이언트 (온라인: ${summary.online}, 오프라인: ${summary.offline})`;
-        showToast(message, summary.offline > 0 ? 'warning' : 'success');
+        const message = `프리셋 "${preset.name}" 실행 요청 전송 완료: ${summary.executed}/${summary.total}개 클라이언트 (온라인: ${summary.online}, 오프라인: ${summary.offline})`;
+        showToast(message, summary.offline > 0 ? 'warning' : 'info');
       } else {
-        showToast(`프리셋 "${preset.name}" 실행이 시작되었습니다.`, 'success');
+        showToast(`프리셋 "${preset.name}" 실행 요청이 전송되었습니다.`, 'info');
       }
       
-
-      
     } catch (error) {
+      console.error(`[DEBUG] 프리셋 실행 오류:`, error);
       showToast(`프리셋 실행 실패: ${error.message}`, 'error');
-      // 실행 실패 시 실행 중 상태 제거
-      setRunningPresets(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(preset.id);
-        return newSet;
-      });
     }
   };
 
   const stopPreset = async (preset) => {
     try {
-      const response = await fetch(`${apiBase}/api/presets/${preset.id}/stop`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || '프리셋 정지 실패');
-      }
-      
-      // 실행 중 상태 제거
-      setRunningPresets(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(preset.id);
-        return newSet;
-      });
+      await apiClient.post(`/api/presets/${preset.id}/stop`);
       
       showToast(`프리셋 "${preset.name}" 정지 요청이 전송되었습니다.`, 'info');
-      
-
       
     } catch (error) {
       showToast(`프리셋 정지 실패: ${error.message}`, 'error');
@@ -261,8 +206,7 @@ const PresetSection = memo(({ presets, groups, clients, apiBase, showToast }) =>
 
   // 프리셋 실행 상태 확인 함수
   const isPresetRunning = (preset) => {
-    // 로컬 상태와 서버 상태 모두 확인
-    return runningPresets.has(preset.id) || preset.is_running === true;
+    return preset.is_running === true || preset.status === 'running' || preset.status === 'partial' || preset.status === 'executing';
   };
 
   return (

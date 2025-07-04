@@ -8,7 +8,29 @@ class PresetController {
   static async getAll(req, res, next) {
     try {
       const presets = await PresetModel.findAll();
-      res.json(presets);
+      
+      // 각 프리셋의 현재 상태 계산
+      const presetsWithStatus = await Promise.all(
+        presets.map(async (preset) => {
+          try {
+            const status = await ExecutionService.getPresetStatus(preset.id);
+            return {
+              ...preset,
+              status: status.status,
+              is_running: status.status === 'running' || status.status === 'partial'
+            };
+          } catch (error) {
+            logger.error(`프리셋 ${preset.id} 상태 조회 실패:`, error);
+            return {
+              ...preset,
+              status: 'unknown',
+              is_running: false
+            };
+          }
+        })
+      );
+      
+      res.json(presetsWithStatus);
     } catch (error) {
       logger.error('프리셋 조회 실패:', error);
       next(error);
@@ -99,7 +121,11 @@ class PresetController {
   // 프리셋 실행
   static async execute(req, res, next) {
     try {
-      const { id } = req.params;
+      const id = req.params.id;
+      
+      if (!id) {
+        return res.status(400).json({ error: '프리셋 ID가 필요합니다.' });
+      }
       
       console.log(`[DEBUG] 프리셋 실행 API 호출됨: ID ${id}`);
       logger.info(`프리셋 실행 API 호출됨: ID ${id}`);
@@ -107,10 +133,10 @@ class PresetController {
       const result = await ExecutionService.executePreset(id);
       
       console.log(`[DEBUG] 프리셋 실행 완료: ID ${id}, 결과:`, result);
-      logger.info(`프리셋 실행: ID ${id}, 성공 ${result.summary.successful}개, 실패 ${result.summary.failed}개`);
+      logger.info(`프리셋 실행: ID ${id}, 성공 ${result.summary.executed}개, 실패 ${result.summary.total - result.summary.executed}개`);
       res.json(result);
     } catch (error) {
-      console.log(`[DEBUG] 프리셋 실행 오류: ID ${id}, 오류:`, error.message);
+      console.log(`[DEBUG] 프리셋 실행 오류: ID ${req.params.id}, 오류:`, error.message);
       if (error.message === '프리셋을 찾을 수 없습니다.') {
         return res.status(404).json({ error: error.message });
       }

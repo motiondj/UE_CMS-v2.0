@@ -91,6 +91,27 @@ class ExecutionService {
     // 프리셋의 마지막 실행 시간 업데이트
     await PresetModel.updateLastExecuted(preset.id);
     
+    // 프리셋 실행 상태 업데이트 (실행 중인 클라이언트가 있으면 running으로 설정)
+    if (executionResults.length > 0) {
+      // 프리셋 상태를 running으로 설정
+      await db.run(
+        'UPDATE presets SET is_running = 1 WHERE id = ?',
+        [preset.id]
+      );
+      
+      console.log(`[DEBUG] 프리셋 ${preset.id} 상태를 running으로 업데이트`);
+      
+      // 웹 UI에 프리셋 상태 변경 이벤트 전송
+      const statusEvent = {
+        preset_id: preset.id,
+        status: 'running',
+        running_clients: executionResults.map(r => r.clientName)
+      };
+      
+      console.log(`[DEBUG] 프리셋 상태 변경 이벤트 전송:`, statusEvent);
+      socketService.emit('preset_status_changed', statusEvent);
+    }
+    
     // Socket.IO 이벤트 전송
     socketService.emit('preset_executed', {
       presetId: preset.id,
@@ -154,6 +175,19 @@ class ExecutionService {
         });
       }
     }
+    
+    // 프리셋 실행 상태 업데이트 (정지)
+    await db.run(
+      'UPDATE presets SET is_running = 0 WHERE id = ?',
+      [preset.id]
+    );
+    
+    // 웹 UI에 프리셋 상태 변경 이벤트 전송
+    socketService.emit('preset_status_changed', {
+      preset_id: preset.id,
+      status: 'stopped',
+      stopped_clients: stopResults.map(r => r.clientName)
+    });
     
     // Socket.IO 이벤트 전송
     socketService.emit('preset_stopped', {

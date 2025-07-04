@@ -52,7 +52,9 @@ function App() {
     const onlineClients = clients.filter(c => c.status === 'online' || c.status === 'running').length;
     const runningClients = clients.filter(c => c.status === 'running').length;
     const activeExecutions = executions.filter(e => e.status === 'running').length;
-    const runningPresets = presets.filter(preset => preset.is_running === true);
+    const runningPresets = presets.filter(preset => 
+      preset.is_running === true || preset.status === 'running' || preset.status === 'partial' || preset.status === 'executing'
+    );
     
     return {
       totalClients: clients.length,
@@ -381,7 +383,6 @@ function App() {
     // 프리셋 상태 변경 이벤트 추가
     socketOn('preset_status_changed', (data) => {
       console.log('📡 프리셋 상태 변경:', data);
-      
       // 프리셋 실행 상태 업데이트
       setPresets(prev => prev.map(preset => 
         preset.id === data.preset_id 
@@ -397,7 +398,12 @@ function App() {
       if (data.status === 'running') {
         showToast(`⚡ 프리셋이 실행되었습니다`, 'success');
       } else if (data.status === 'stopped') {
-        showToast(`⏹️ 프리셋이 정지되었습니다`, 'info');
+        // 비정상 종료인지 확인
+        if (data.reason === '비정상 종료') {
+          showToast(`⚠️ ${data.preset_name}이(가) 비정상 종료되었습니다`, 'warning');
+        } else {
+          showToast(`⏹️ 프리셋이 정지되었습니다`, 'info');
+        }
       }
     });
 

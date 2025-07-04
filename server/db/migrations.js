@@ -101,11 +101,13 @@ const additionalMigrations = [
   `ALTER TABLE clients ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
   `ALTER TABLE clients ADD COLUMN status_changed_at DATETIME DEFAULT CURRENT_TIMESTAMP`,
   `ALTER TABLE presets ADD COLUMN last_executed_at DATETIME`,
+  `ALTER TABLE presets ADD COLUMN is_running BOOLEAN DEFAULT false`,
   
   // 추가 인덱스들
   `CREATE INDEX IF NOT EXISTS idx_clients_updated_at ON clients(updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_clients_status_changed_at ON clients(status_changed_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_presets_last_executed ON presets(last_executed_at)`
+  `CREATE INDEX IF NOT EXISTS idx_presets_last_executed ON presets(last_executed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_presets_is_running ON presets(is_running)`
 ];
 
 async function runMigrations() {

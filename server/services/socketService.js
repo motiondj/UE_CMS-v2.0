@@ -1,6 +1,7 @@
 const socketIo = require('socket.io');
 const ClientModel = require('../models/Client');
 const config = require('../config/server');
+const db = require('../config/database');
 
 class SocketService {
   constructor() {
@@ -241,27 +242,70 @@ class SocketService {
   }
 
   async handleExecutionResult(socket, data) {
-    const { executionId, clientName, status, result } = data;
-    console.log(`[INFO] 실행 결과: ${clientName} - ${status}`);
+    const { clientName, presetId, command, result, timestamp } = data;
+    console.log(`[INFO] 실행 결과: ${clientName} - 프리셋 ${presetId} - 성공: ${result.get('success', false)}`);
     
-    // 실행 히스토리 업데이트
-    if (executionId) {
-      const ExecutionModel = require('../models/Execution');
-      await ExecutionModel.updateStatus(executionId, status, result);
-      this.emit('execution_updated', { executionId, status, result });
-    }
-    
-    // 클라이언트 상태 업데이트
-    if (clientName) {
+    try {
+      // 클라이언트 찾기
       const client = await ClientModel.findByName(clientName);
-      if (client) {
-        await ClientModel.updateStatus(client.id, 'online');
-        this.emit('client_status_changed', { 
-          name: clientName, 
-          status: 'online',
-          reason: '명령 실행 완료'
-        });
+      if (!client) {
+        console.log(`[WARN] 클라이언트를 찾을 수 없음: ${clientName}`);
+        return;
       }
+      
+      // 프리셋 정보 찾기
+      const PresetModel = require('../models/Preset');
+      const preset = await PresetModel.findById(presetId);
+      if (!preset) {
+        console.log(`[WARN] 프리셋을 찾을 수 없음: ${presetId}`);
+        return;
+      }
+      
+      // 실행 결과에 따라 상태 결정
+      const success = result.get('success', false);
+      const newStatus = success ? 'running' : 'stopped';
+      
+      // 클라이언트 상태 업데이트
+      await ClientModel.updateStatus(client.id, newStatus);
+      
+      // 프리셋 상태 업데이트
+      if (success) {
+        // 실행 성공 시 current_preset_id 설정
+        await db.run(
+          'UPDATE clients SET current_preset_id = ? WHERE id = ?',
+          [presetId, client.id]
+        );
+      } else {
+        // 실행 실패 시 current_preset_id 초기화
+        await db.run(
+          'UPDATE clients SET current_preset_id = NULL WHERE id = ?',
+          [client.id]
+        );
+      }
+      
+      // 프리셋 상태 변경 이벤트 전송
+      this.emit('preset_status_changed', {
+        preset_id: presetId,
+        preset_name: preset.name,
+        client_id: client.id,
+        client_name: client.name,
+        status: newStatus,
+        reason: success ? '실행 완료' : `실행 실패: ${result.get('error', '알 수 없는 오류')}`,
+        running_clients: success ? [client.name] : []
+      });
+      
+      // 클라이언트 상태 변경 이벤트 전송
+      this.emit('client_status_changed', { 
+        client_id: client.id,
+        name: client.name,
+        status: newStatus,
+        reason: success ? '명령 실행 완료' : '명령 실행 실패'
+      });
+      
+      console.log(`[INFO] 프리셋 ${preset.name} 실행 결과 처리 완료: ${newStatus}`);
+      
+    } catch (error) {
+      console.log(`[ERROR] 실행 결과 처리 중 오류:`, error);
     }
   }
 
@@ -290,8 +334,11 @@ class SocketService {
 
   async handleClientStatusUpdate(socket, data) {
     try {
-      const { clientName, status, timestamp } = data;
+      const { clientName, status, reason, timestamp } = data;
       console.log(`[INFO] 클라이언트 상태 업데이트 수신: ${clientName} -> ${status} - ${timestamp}`);
+      if (reason) {
+        console.log(`[INFO] 상태 변경 이유: ${reason}`);
+      }
       
       // 클라이언트 찾기
       const client = await ClientModel.findByName(clientName);
@@ -299,11 +346,49 @@ class SocketService {
         // 상태 업데이트
         await ClientModel.updateStatus(client.id, status);
         
+        // 비정상 종료로 인한 상태 변경인 경우 프리셋 상태도 업데이트
+        if (status === 'online' && reason && reason.includes('비정상 종료')) {
+          console.log(`[INFO] 비정상 종료 감지 - 프리셋 상태 업데이트 시작: ${clientName}`);
+          
+          try {
+            // 해당 클라이언트가 실행 중인 프리셋 찾기
+            const ExecutionModel = require('../models/Execution');
+            const runningExecutions = await ExecutionModel.findByClientId(client.id);
+            
+            console.log(`[INFO] 실행 중인 프리셋 검색 결과: ${runningExecutions.length}개`);
+            
+            for (const execution of runningExecutions) {
+              console.log(`[INFO] 프리셋 확인: ${execution.preset_name} (상태: ${execution.status})`);
+              
+              if (execution.status === 'running') {
+                // 프리셋 상태를 'stopped'로 변경
+                await ExecutionModel.updateStatus(execution.id, 'stopped');
+                console.log(`[INFO] 프리셋 상태 업데이트: ${execution.preset_name} -> stopped (비정상 종료)`);
+                
+                // 프리셋 상태 변경 이벤트 전송
+                this.emit('preset_status_changed', {
+                  preset_id: execution.preset_id,
+                  preset_name: execution.preset_name,
+                  client_id: client.id,
+                  client_name: client.name,
+                  status: 'stopped',
+                  reason: '비정상 종료'
+                });
+                
+                console.log(`[INFO] 프리셋 상태 변경 이벤트 전송 완료: ${execution.preset_name}`);
+              }
+            }
+          } catch (error) {
+            console.log(`[ERROR] 프리셋 상태 업데이트 중 오류:`, error);
+          }
+        }
+        
         // 상태 변경 이벤트 전송
         this.emit('client_status_changed', { 
           client_id: client.id,
           name: client.name,
-          status: status 
+          status: status,
+          reason: reason || '정상 상태 변경'
         });
         
         console.log(`[INFO] 클라이언트 상태 업데이트 완료: ${clientName} -> ${status}`);

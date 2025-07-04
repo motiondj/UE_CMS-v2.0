@@ -586,6 +586,16 @@ try:
                         self.sio.emit('heartbeat', heartbeat_data)
                         print(f"💓 하트비트 전송: {self.client_name}")
                         logging.info(f"하트비트 전송: {self.client_name}")
+                        
+                        # 프로세스 상태도 함께 확인 (10초마다)
+                        if hasattr(self, '_heartbeat_count'):
+                            self._heartbeat_count += 1
+                        else:
+                            self._heartbeat_count = 1
+                        
+                        if self._heartbeat_count % 2 == 0:  # 10초마다 (5초 * 2)
+                            self.check_process_status()
+                        
                         time.sleep(5)  # 5초마다 하트비트
                     except Exception as e:
                         logging.error(f"하트비트 전송 오류: {e}")
@@ -738,7 +748,11 @@ try:
         
         def check_process_status(self):
             """실행 중인 프로세스 상태를 확인합니다."""
+            if not self.running_processes:
+                return  # 실행 중인 프로세스가 없으면 체크하지 않음
+            
             processes_to_remove = []
+            print(f"🔍 프로세스 상태 확인 중... (총 {len(self.running_processes)}개)")
             
             for process_name, process_info in self.running_processes.items():
                 try:
@@ -747,20 +761,65 @@ try:
                     
                     if not proc.is_running():
                         processes_to_remove.append(process_name)
+                        print(f"❌ 프로세스 종료 감지: {process_name} (PID: {pid})")
                         logging.info(f"프로세스 종료 감지: {process_name} (PID: {pid})")
-                    
+                        
+                    # 비정상 종료 시 서버에 알림
+                    if self.sio.connected:
+                        status_data = {
+                            'clientName': self.client_name,
+                            'status': 'online',
+                            'reason': f'프로세스 비정상 종료: {process_name}',
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        print(f"📡 서버로 상태 업데이트 전송: {status_data}")
+                        self.sio.emit('client_status_update', status_data)
+                        print(f"🔄 비정상 종료 감지 - 상태를 'online'으로 변경: {self.client_name}")
+                        logging.info(f"비정상 종료 감지 - 상태를 'online'으로 변경: {self.client_name}")
+                    else:
+                        print(f"❌ 소켓 연결 안됨 - 상태 업데이트 전송 실패")
+                        logging.warning(f"소켓 연결 안됨 - 상태 업데이트 전송 실패")
                 except psutil.NoSuchProcess:
                     processes_to_remove.append(process_name)
+                    print(f"❌ 프로세스 존재하지 않음: {process_name} (PID: {pid})")
                     logging.info(f"프로세스 존재하지 않음: {process_name} (PID: {pid})")
+                    
+                    # 비정상 종료 시 서버에 알림
+                    if self.sio.connected:
+                        status_data = {
+                            'clientName': self.client_name,
+                            'status': 'online',
+                            'reason': f'프로세스 비정상 종료: {process_name}',
+                            'timestamp': datetime.now().isoformat()
+                        }
+                        print(f"📡 서버로 상태 업데이트 전송: {status_data}")
+                        self.sio.emit('client_status_update', status_data)
+                        print(f"🔄 비정상 종료 감지 - 상태를 'online'으로 변경: {self.client_name}")
+                        logging.info(f"비정상 종료 감지 - 상태를 'online'으로 변경: {self.client_name}")
+                    else:
+                        print(f"❌ 소켓 연결 안됨 - 상태 업데이트 전송 실패")
+                        logging.warning(f"소켓 연결 안됨 - 상태 업데이트 전송 실패")
+                        
                 except Exception as e:
+                    print(f"❌ 프로세스 상태 확인 중 오류: {process_name} - {e}")
                     logging.error(f"프로세스 상태 확인 중 오류: {e}")
             
             # 종료된 프로세스 제거
             for process_name in processes_to_remove:
                 self.remove_running_process(process_name)
+                print(f"🗑️ 프로세스 목록에서 제거: {process_name}")
+            
+            if processes_to_remove:
+                print(f"📊 프로세스 상태 확인 완료: {len(processes_to_remove)}개 종료됨")
+            else:
+                print(f"📊 프로세스 상태 확인 완료: 모든 프로세스 정상 실행 중")
         
         def start_process_monitor(self):
             """프로세스 모니터링을 시작합니다."""
+            print("🔄 프로세스 모니터링 시작")
+            logging.info("프로세스 모니터링 시작")
+            
+            # 메인 스레드에서 직접 실행
             def monitor_loop():
                 while self.running:
                     try:
@@ -770,8 +829,12 @@ try:
                         logging.error(f"프로세스 모니터링 중 오류: {e}")
                         time.sleep(5)
             
+            # 별도 스레드로 실행
             self.process_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
             self.process_monitor_thread.start()
+            print("✅ 프로세스 모니터링 스레드 시작됨")
+            print("✅ 프로세스 모니터링 스레드 시작됨")
+            logging.info("프로세스 모니터링 스레드 시작됨")
         
         def stop_running_processes(self):
             """실행 중인 모든 프로세스를 정지합니다."""
@@ -985,7 +1048,9 @@ try:
                     self.update_tray_icon()
                 
                 # 프로세스 모니터링 시작
+                print("🔄 프로세스 모니터링 시작 시도...")
                 self.start_process_monitor()
+                print("✅ 프로세스 모니터링 시작 완료")
                 
                 # Socket.io 연결
                 if self.connect_socket():
